@@ -47,6 +47,8 @@ PER_STUDENT_KEYS = (
     "voice_result",
     "voice_text",
     "voice_audio",  # the recorded answer (st.audio_input)
+    "voice_convo",  # hands-free multi-turn voice interview session
+    "assessment_active",  # active proctored quiz/interview lock flag
     "proctor_state",  # core.proctor_guard.STATE_KEY: the open assessment's strikes
 )
 # Kept for the same student after a re-profile (a new resume does not change their GitHub
@@ -283,9 +285,40 @@ def account_sidebar(student: dict) -> None:
 
 
 def _settings(student: dict) -> None:
-    """The student's own settings and their signed-in devices."""
+    """The student's own settings, locked career domain, target job role switcher, and devices."""
     sid = student["id"]
     with st.popover("Settings", icon=":material/settings:", width="stretch"):
+        lock = services.locked_domain(sid)
+        dom = lock.domain if lock else services.domain_of_role(student["target_role"])
+        st.text_input(
+            "Career domain (locked)",
+            value=dom.name,
+            disabled=True,
+            help="Career domain is set once at account creation and cannot be changed.",
+            key=f"pref_locked_domain_{sid}",
+        )
+        roles = services.domain_roles(dom.id)
+        cur_role = student["target_role"]
+        role_idx = roles.index(cur_role) if cur_role in roles else 0
+        new_role = st.selectbox(
+            "Target job role",
+            roles,
+            index=role_idx,
+            help="You can change your target job role anytime within your career domain.",
+            key=f"pref_target_role_{sid}",
+        )
+        if new_role != cur_role and st.button(
+            "Update job role", type="primary", icon=":material/target:", key=f"pref_save_role_{sid}"
+        ):
+            try:
+                services.change_target_role(sid, new_role)
+            except services.ServiceError as e:
+                st.error(formatter.md_escape(str(e)), icon=":material/error:")
+            else:
+                set_student(sid, fresh=True)
+                st.toast(f"Target role updated to {new_role}.", icon=":material/check_circle:")
+                st.rerun()
+        st.divider()
         current = prefs.get(sid)
         allowed = settings().preload
         preload = st.toggle(
@@ -476,7 +509,7 @@ def no_profile_card(key: str = "need_profile") -> None:
                 key=f"{key}_bench",
             )
     if scan:
-        st.switch_page("views/onboard.py")
+        st.switch_page("views/resume_builder.py")
     if bench and sid:
         try:
             services.benchmark_profile(sid)

@@ -18,21 +18,12 @@ sid, _ = require_profile()
 me = journey.student(sid)
 
 with st.container(border=True):
-    streams = journey.streams()
-    stream = st.pills("Stream", streams, default=me.stream if me.stream in streams else streams[0])
-    stream = stream or me.stream  # a click on the selected pill clears it
-    domains = journey.domains_in(stream) or journey.domains_in(me.stream)
-    names = [name for _, name in domains]
-    domain_id, _ = st.selectbox(
-        "Career domain",
-        domains,
-        index=names.index(me.domain) if me.domain in names else 0,
-        format_func=lambda d: d[1],
+    st.markdown(
+        f":material/lock: **Career domain:** {formatter.md_escape(me.domain)} · "
+        f"**Target role:** {formatter.md_escape(me.target_role)}"
     )
-    roles = journey.roles_in(domain_id)
-    role = st.selectbox(
-        "Target role", roles, index=roles.index(me.target_role) if me.target_role in roles else 0
-    )
+    st.caption("Your Career domain is locked. Change your target job role in **Settings** in the sidebar.")
+    role = me.target_role
     source = st.segmented_control(
         "Resume", ["Upload a file", "Use a sample"], default="Upload a file", key="scan_source"
     )

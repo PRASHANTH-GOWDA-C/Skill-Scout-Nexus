@@ -123,18 +123,83 @@ def focus_topics(role: str) -> list[str]:
 
 
 def locked_domain(student_id: str | None) -> LockedDomain | None:
-    """The domain a student's first saved resume fixed, or None (nothing saved yet)."""
-    row = db.first_resume_domain(student_id) if student_id else None
-    if row is None:
+    """The domain fixed when the account was created (or first saved resume / organization),
+    so the Career domain can never be changed while the job role can."""
+    if not student_id:
         return None
-    if row["org_name"]:  # an organization's student: the domain it assigned, until it moves them
+    s = db.student(student_id)
+    if s is None:
+        return None
+    if s["org_id"] and s["org_name"]:  # organization student: org sets their domain
         return LockedDomain(
-            syllabus.domain_of_role(row["target_role"]), row["created_at"], by=row["org_name"]
+            syllabus.domain_of_role(s["target_role"]), s["created_at"], by=s["org_name"]
         )
+    if s["domain_id"]:
+        try:
+            return LockedDomain(syllabus.domain(s["domain_id"]), s["created_at"])
+        except KeyError:
+            pass
+    row = db.first_resume_domain(student_id)
+    if row is not None:
+        try:
+            dom = syllabus.domain(row["domain_id"])
+            db.set_student_domain(student_id, dom.id)
+            return LockedDomain(dom, row["created_at"])
+        except KeyError:
+            pass
+    dom = syllabus.domain_of_role(s["target_role"])
+    db.set_student_domain(student_id, dom.id)
+    return LockedDomain(dom, s["created_at"])
+
+
+def change_target_role(student_id: str, new_role: str) -> StudentProfile | None:
+    """Change the student's target job role within their locked career domain and keep their
+    profile, readiness, and telemetry synchronized."""
+    s = student_row(student_id)
+    if s is None:
+        raise ServiceError("Sign in first.")
+    lock = locked_domain(student_id)
+    allowed_roles = domain_roles(lock.domain.id) if lock else list(agents.roles())
+    if new_role not in allowed_roles:
+        domain_name = lock.domain.name if lock else "your domain"
+        raise ServiceError(f"{new_role!r} is not in your locked career domain ({domain_name}).")
+    if new_role != s["target_role"]:
+        db.update_student_role(student_id, new_role)
+    profile = current_profile(student_id)
+    if profile is not None and profile.target_role != new_role:
+        req = syllabus.role_skills().get(new_role, [])
+        all_skills = list(dict.fromkeys([*profile.skills, *profile.matched_skills]))
+        skill_lower = {sk.lower() for sk in all_skills}
+        matched = [r for r in req if r.lower() in skill_lower]
+        missing = [r for r in req if r.lower() not in skill_lower]
+        score = checks.readiness_score(req, matched)
+        updated = profile.model_copy(
+            update={
+                "target_role": new_role,
+                "matched_skills": matched,
+                "missing_skills": missing,
+                "readiness_score": score,
+            }
+        )
+        db.save_profile(student_id, updated)
+        profile = updated
     try:
-        return LockedDomain(syllabus.domain(row["domain_id"]), row["created_at"])
-    except KeyError:  # a domain since removed from the catalog no longer locks anything
-        return None
+        from database import crud
+
+        crud.save_student(
+            s["username"],
+            s["name"],
+            syllabus.stream_of(lock.domain.id) if lock else "Engineering",
+            new_role,
+            email=s["email"],
+            department=lock.domain.name if lock else None,
+            org_code=s["org_code"],
+            main_domain=s["main_domain"],
+            subdomain=s["subdomain"],
+        )
+    except Exception:
+        pass
+    return profile
 
 
 def student_syllabus(
@@ -334,6 +399,36 @@ def generate_next_plan(student_id: str, on_event: OnEvent | None = None) -> Week
     previous = ov.plans[-1] if ov.plans else None
     plan = agents.plan_week(profile, ov.scores, ov.next_week, previous, student_id, on_event)
     db.save_plan(student_id, plan)
+    try:
+        from agents.study_planner_agent import DayRoadmap, ResourceLink, SevenDayRoadmap
+        from database import crud
+
+        s = student_row(student_id)
+        if s is not None:
+            dom = locked_domain(student_id)
+            stream = syllabus.stream_of(dom.domain.id) if dom else "Engineering"
+            t_row = crud.save_student(s["username"], s["name"], stream, s["target_role"])
+            roadmap = SevenDayRoadmap(
+                target_role=s["target_role"],
+                target_stream=stream,
+                addressed_gaps=list(dict.fromkeys(d.topic for d in plan.days)),
+                summary=plan.rationale,
+                days=[
+                    DayRoadmap(
+                        day=d.day,
+                        focus_skill=d.topic,
+                        estimated_hours=round(d.duration_min / 60, 1),
+                        learning_objectives=list(d.subtopics),
+                        resources=[ResourceLink(title=f"Study {d.topic}", url="https://roadmap.sh")],
+                        micro_tasks=[d.practice_goal],
+                    )
+                    for d in plan.days
+                ],
+                is_provisional=False,
+            )
+            crud.save_study_plan(t_row.id, plan.week_no, roadmap.model_dump())
+    except Exception:
+        pass
     return plan
 
 
@@ -1581,10 +1676,10 @@ def save_project(
         raise ServiceError("The repository link must be a web address starting with https://.")
     if status not in PROJECT_STATUSES:
         raise ServiceError(f"Unknown status {status!r}.")
-    if len(summary) > 1500 or len(tech) > 200 or len(readme) > 8000:
+    if len(summary) > 4000 or len(tech) > 600 or len(readme) > 25000:
         raise ServiceError(
-            "Keep highlights under 1,500 characters, the stack under 200 and the README "
-            "under 8,000."
+            "Keep highlights under 4,000 characters, the stack under 600 and the README "
+            "under 25,000."
         )
     fields = {
         "name": name,
@@ -1626,6 +1721,218 @@ def resume_projects(student_id: str | None) -> list[dict]:
         for p in db.projects(student_id)
         if p["on_resume"]
     ]
+
+
+def _merge_skills_into_profile(student_id: str, new_skills: Sequence[str], *, project_name: str = "") -> None:
+    """Merge newly acquired skills (from GitHub projects or uploaded certificates) and project title
+    into the student's latest profile and recalculate readiness against their target role."""
+    s = student_row(student_id)
+    if s is None:
+        return
+    profile = current_profile(student_id) or starting_profile(s["name"], s["target_role"])
+    existing_lower = {sk.lower() for sk in profile.skills}
+    merged_skills = list(profile.skills)
+    for sk in new_skills:
+        clean = sk.strip()
+        if clean and clean.lower() not in existing_lower:
+            merged_skills.append(clean)
+            existing_lower.add(clean.lower())
+    merged_projects = list(profile.projects)
+    if project_name and project_name.strip() and project_name.strip() not in merged_projects:
+        merged_projects.append(project_name.strip())
+
+    req = syllabus.role_skills().get(s["target_role"], [])
+    all_lower = {sk.lower() for sk in [*merged_skills, *profile.matched_skills]}
+    # Also match substrings for compound skills (e.g. "REST API" matching "REST APIs")
+    matched = [
+        r for r in req if r.lower() in all_lower or any(r.lower() in sk or sk in r.lower() for sk in all_lower if len(sk) > 2)
+    ]
+    missing = [r for r in req if r not in matched]
+    score = checks.readiness_score(req, matched)
+    updated = profile.model_copy(
+        update={
+            "target_role": s["target_role"],
+            "skills": merged_skills,
+            "projects": merged_projects,
+            "matched_skills": matched,
+            "missing_skills": missing,
+            "readiness_score": score,
+        }
+    )
+    db.save_profile(student_id, updated)
+
+
+def sync_project_to_profile_and_resume(
+    student_id: str,
+    *,
+    name: str,
+    tech: str,
+    summary: str,
+    on_resume: bool = True,
+) -> None:
+    """Propagate a saved/imported project's title, bullets, and tech stack into the student's
+    personal profile (readiness + skills) and latest saved resume version if one exists."""
+    tech_list = [t.strip() for t in tech.split(",") if t.strip()]
+    _merge_skills_into_profile(student_id, tech_list, project_name=name)
+    if not on_resume:
+        return
+    versions = resume_history(student_id)
+    if not versions:
+        return
+    latest = versions[-1]
+    res = dict(latest.resume)
+    existing_skills = list(res.get("skills", []))
+    seen_sk = {s.lower() for s in existing_skills}
+    for t in tech_list:
+        if t.lower() not in seen_sk:
+            existing_skills.append(t)
+            seen_sk.add(t.lower())
+    res["skills"] = existing_skills
+    bullets = [ln.strip("-*• ").strip() for ln in summary.splitlines() if ln.strip()]
+    projs = [p for p in res.get("projects", []) if p.get("title", "").lower() != name.strip().lower()]
+    projs.append({"title": name.strip(), "tech": ", ".join(tech_list), "bullets": bullets})
+    res["projects"] = projs
+    ats = resume_builder.evaluate_ats_compatibility(res, latest.target_role)
+    db.save_resume_version(student_id, latest.domain_id, latest.target_role, res, ats.score)
+
+
+# --- certificates (courses & hackathons) ---------------------------------------
+
+CERT_KINDS = ("Course", "Hackathon")
+
+
+def format_certificate_line(row: Mapping) -> str:
+    """Single clean ATS resume line for a saved certificate."""
+    kind = row["kind"]
+    title = str(row["title"]).strip()
+    issuer = str(row["issuer"]).strip()
+    issued = str(row["issued_date"]).strip()
+    prefix = f"[{kind}] "
+    parts = [prefix + title]
+    if issuer:
+        parts.append(issuer)
+    if issued:
+        parts.append(issued)
+    line = " - ".join(parts[:2])
+    if len(parts) > 2:
+        line += f" ({parts[2]})"
+    return line
+
+
+def extract_certificate_metadata(filename: str, data: bytes, target_role: str = "") -> tuple[str, list[str]]:
+    """Read text from PDF/DOCX/TXT certificate uploads (safely skipping binary images) and
+    suggest skills matching the catalog/role."""
+    text = ""
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if data and ext in {".pdf", ".docx", ".txt"}:
+        try:
+            text = extract_text(filename, data)
+        except Exception:
+            text = ""
+    haystack = f"{filename} {text}".lower()
+    pool = set(syllabus.role_skills().get(target_role, []))
+    for skills in syllabus.role_skills().values():
+        pool.update(skills)
+    matched = sorted(
+        sk for sk in pool if len(sk) > 1 and re.search(rf"(?<!\w){re.escape(sk.lower())}(?!\w)", haystack)
+    )
+    return text[:4000], matched[:12]
+
+
+def list_certificates(student_id: str | None) -> list[sqlite3.Row]:
+    return db.certificates(student_id) if student_id else []
+
+
+def resume_certificates(student_id: str | None) -> list[str]:
+    if not student_id:
+        return []
+    return [format_certificate_line(c) for c in db.certificates(student_id) if c["on_resume"]]
+
+
+def sync_certificates_to_resume_and_profile(student_id: str) -> None:
+    """Keep the student's profile skills and latest saved resume synced with uploaded certificates."""
+    certs = db.certificates(student_id)
+    cert_skills: list[str] = []
+    for c in certs:
+        cert_skills.extend(s.strip() for s in str(c["skills"]).split(",") if s.strip())
+    if cert_skills:
+        _merge_skills_into_profile(student_id, cert_skills)
+    versions = resume_history(student_id)
+    if not versions:
+        return
+    latest = versions[-1]
+    res = dict(latest.resume)
+    form = dict(res.get("form") or {})
+    manual_certs = [
+        ln.strip()
+        for ln in str(form.get("certifications", "")).splitlines()
+        if ln.strip() and not ln.strip().startswith(("[Course]", "[Hackathon]"))
+    ]
+    uploaded_lines = [format_certificate_line(c) for c in certs if c["on_resume"]]
+    all_certs = list(dict.fromkeys([*uploaded_lines, *manual_certs]))
+    res["certifications"] = all_certs
+    form["certifications"] = "\n".join(all_certs)
+    res["form"] = form
+    if cert_skills:
+        seen = {s.lower() for s in res.get("skills", [])}
+        res["skills"] = [*res.get("skills", []), *[s for s in cert_skills if s.lower() not in seen]]
+    ats = resume_builder.evaluate_ats_compatibility(res, latest.target_role)
+    db.save_resume_version(student_id, latest.domain_id, latest.target_role, res, ats.score)
+
+
+def save_certificate(
+    student_id: str,
+    *,
+    title: str,
+    kind: str,
+    issuer: str = "",
+    issued_date: str = "",
+    credential_id: str = "",
+    skills: str = "",
+    file_name: str = "",
+    file_mime: str = "",
+    file_bytes: bytes = b"",
+    on_resume: bool = True,
+) -> int:
+    s = student_row(student_id)
+    if s is None:
+        raise ServiceError("Sign in first.")
+    title = title.strip()
+    if not 2 <= len(title) <= 160:
+        raise ServiceError("Certificate title must be between 2 and 160 characters.")
+    if kind not in CERT_KINDS:
+        raise ServiceError("Certificate type must be Course or Hackathon.")
+    if len(file_bytes) > 5 * 1024 * 1024:
+        raise ServiceError("Certificate file must be 5 MB or smaller.")
+    extracted, detected = extract_certificate_metadata(file_name, file_bytes, s["target_role"])
+    manual_skills = [sk.strip() for sk in skills.split(",") if sk.strip()]
+    merged_skills = ", ".join(list(dict.fromkeys([*manual_skills, *detected])))[:500]
+    cid = db.save_certificate(
+        student_id,
+        title=title,
+        kind=kind,
+        issuer=issuer.strip()[:120],
+        issued_date=issued_date.strip()[:40],
+        credential_id=credential_id.strip()[:80],
+        skills=merged_skills,
+        file_name=file_name[:180],
+        file_mime=file_mime[:100],
+        file_bytes=file_bytes,
+        extracted_text=extracted,
+        on_resume=on_resume,
+    )
+    sync_certificates_to_resume_and_profile(student_id)
+    return cid
+
+
+def toggle_certificate_resume(student_id: str, cert_id: int, on_resume: bool) -> None:
+    db.set_certificate_on_resume(student_id, cert_id, on_resume)
+    sync_certificates_to_resume_and_profile(student_id)
+
+
+def remove_certificate(student_id: str, cert_id: int) -> None:
+    db.delete_certificate(student_id, cert_id)
+    sync_certificates_to_resume_and_profile(student_id)
 
 
 # --- evaluation scorecard --------------------------------------------------------------

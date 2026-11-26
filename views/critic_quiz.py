@@ -71,6 +71,7 @@ grade: journey.QuizGrade | None = st.session_state.get(GRADE)
 n = st.session_state.get(ROUND, 0)
 
 if grade is None:
+    st.session_state["assessment_active"] = True
     proctor_guard.render_proctor_guard(page_type="critic_quiz")
     proctor_guard.render_warning_banner()
     if proctor_guard.is_breached():
@@ -78,7 +79,22 @@ if grade is None:
         st.session_state[GRADE] = grade = journey.grade_quiz(
             sid, batch, answers, proctor_flags=[proctor_guard.FLAG_PROCTOR_BREACH]
         )
+        st.session_state["assessment_active"] = False
         st.rerun()
+    with st.container(horizontal=True):
+        if st.button("Restart quiz", icon=":material/restart_alt:", key="cq_page_restart"):
+            for i in range(len(batch.questions)):
+                st.session_state.pop(f"cq{n}_{i}", None)
+            st.session_state[ROUND] = n + 1
+            proctor_guard.reset_proctor_state()
+            st.rerun()
+        if st.button("Exit quiz", type="secondary", icon=":material/logout:", key="cq_page_exit"):
+            st.session_state.pop(BATCH, None)
+            st.session_state.pop(GRADE, None)
+            st.session_state["assessment_active"] = False
+            proctor_guard.reset_proctor_state()
+            proctor_guard.clear_proctor_overlay()
+            st.rerun()
 
 if grade is None:  # the form gives no rerun per answer: write the next set as the quiz opens
     journey.preload_next_quiz(sid, batch)
@@ -101,12 +117,21 @@ with st.form(f"cq_answers_{n}", border=False):
 if submitted:
     try:
         st.session_state[GRADE] = grade = journey.grade_quiz(sid, batch, answers)
+        st.session_state["assessment_active"] = False
         st.rerun()
     except ServiceError as e:
         st.error(formatter.md_escape(str(e)), icon=":material/error:")
 
 if grade is None:
     st.stop()
+
+st.session_state["assessment_active"] = False
+proctor_guard.clear_proctor_overlay()
+if st.button("Exit quiz review", type="primary", icon=":material/logout:", key="cq_page_exit_done"):
+    st.session_state.pop(BATCH, None)
+    st.session_state.pop(GRADE, None)
+    proctor_guard.reset_proctor_state()
+    st.rerun()
 
 if proctor_guard.is_breached():
     st.error(

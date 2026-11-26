@@ -84,53 +84,46 @@ else:
         if code_space
         else []
     )
-    # Sidebar navigation keeps every page visible with the student context beneath it; a top
-    # bar would fold the sections into menus, which is worse on a projector (docs/design).
-    # The numbered steps come first; the earlier tools stay one group below.
+    # Lock sidebar navigation while a proctored quiz or mock interview is actively running
+    if st.session_state.get("assessment_active"):
+        st.html(
+            """<style>
+            [data-testid="stSidebar"] { pointer-events: none !important; opacity: 0.45 !important; }
+            </style>"""
+        )
+
+    # Single unified navigation combining the whole workflow without duplicated entries.
     page = st.navigation(
-        {
-            "Placement journey": [
-                st.Page(
-                    "views/onboard.py",
-                    title="1. Onboarding and profile",
-                    icon=":material/person_add:",
-                ),
-                st.Page(
-                    "views/scanner.py",
-                    title="2. Resume scan and skill gaps",
-                    icon=":material/document_scanner:",
-                ),
-                st.Page(
-                    "views/roadmap.py", title="3. 7-day study roadmap", icon=":material/route:"
-                ),
-                st.Page(
-                    "views/critic_quiz.py",
-                    title="4. Critic-checked quiz",
-                    icon=":material/verified:",
-                ),
-                st.Page(
-                    "views/voice_interview.py",
-                    title="5. Proctored voice assessment",
-                    icon=":material/graphic_eq:",
-                ),
-            ],
-            "More tools": [
-                st.Page("views/home.py", title="Home", icon=":material/home:", default=True),
-                st.Page("views/resume_builder.py", title="Resume builder", icon=":material/badge:"),
-                *projects,
-                st.Page("views/plan.py", title="Weekly plan", icon=":material/calendar_month:"),
-                st.Page("views/quiz.py", title="Quiz", icon=":material/quiz:"),
-                st.Page(
-                    "views/interview.py",
-                    title="Mock interview",
-                    icon=":material/record_voice_over:",
-                ),
-                st.Page("views/dashboard.py", title="Dashboard", icon=":material/monitoring:"),
-                st.Page("views/results.py", title="Results", icon=":material/fact_check:"),
-            ],
-        },
+        [
+            st.Page("views/home.py", title="Home & Dashboard", icon=":material/home:", default=True),
+            st.Page(
+                "views/resume_builder.py",
+                title="Resume & Skills Hub",
+                icon=":material/badge:",
+            ),
+            *projects,
+            st.Page(
+                "views/plan.py",
+                title="Study Plan & Roadmap",
+                icon=":material/calendar_month:",
+            ),
+            st.Page("views/quiz.py", title="Quiz Arena", icon=":material/quiz:"),
+            st.Page(
+                "views/interview.py",
+                title="Mock Interviews",
+                icon=":material/record_voice_over:",
+            ),
+            st.Page("views/results.py", title="Results", icon=":material/fact_check:"),
+            # Hidden compatibility routes so direct page switches/bookmarks still work
+            st.Page("views/onboard.py", title="Account & Profile", visibility="hidden"),
+            st.Page("views/scanner.py", title="Resume Scan", visibility="hidden"),
+            st.Page("views/roadmap.py", title="7-day Roadmap", visibility="hidden"),
+            st.Page("views/critic_quiz.py", title="Critic Quiz", visibility="hidden"),
+            st.Page("views/voice_interview.py", title="Voice Interview", visibility="hidden"),
+            st.Page("views/dashboard.py", title="Dashboard", visibility="hidden"),
+        ],
         position="sidebar",
-        expanded=True,  # every page listed: no "View more" fold hiding the earlier tools
+        expanded=True,
     )
 flush_cookie()  # a session cookie to write or clear after sign-in or sign-out
 if student is not None:

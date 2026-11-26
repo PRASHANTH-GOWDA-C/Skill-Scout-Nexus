@@ -37,6 +37,7 @@ def tx() -> Iterator[sqlite3.Connection]:
 # Columns students gained with organizations; an older file gets them by ALTER TABLE (nullable or
 # defaulted, so every row is kept). A new file already has them from schema.sql.
 STUDENT_ADDED = (
+    ("domain_id", "TEXT"),
     ("org_id", "INTEGER REFERENCES organizations(id)"),
     ("main_domain", "TEXT"),
     ("subdomain", "TEXT"),
@@ -100,15 +101,20 @@ def create_student(
     email: str | None = None,
     password_hash: str | None = None,
     at: str | None = None,
+    domain_id: str | None = None,
 ) -> str:
     """A new account (and its password, when it has one); returns its id. The caller has
     validated and lower-cased username and email; a duplicate raises sqlite3.IntegrityError."""
+    if not domain_id:
+        from piq import syllabus
+
+        domain_id = syllabus.domain_of_role(target_role).id
     sid = uuid.uuid4().hex
     with tx() as c:
         c.execute(
-            """INSERT INTO students (id, name, username, email, target_role, created_at)
-               VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))""",
-            (sid, name, username, email, target_role, at),
+            """INSERT INTO students (id, name, username, email, target_role, domain_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))""",
+            (sid, name, username, email, target_role, domain_id, at),
         )
         if password_hash:
             c.execute(
@@ -116,6 +122,21 @@ def create_student(
                 (sid, password_hash),
             )
     return sid
+
+
+def update_student_role(student_id: str, target_role: str) -> None:
+    """Update only the student's target job role (career domain remains locked)."""
+    with tx() as c:
+        c.execute("UPDATE students SET target_role = ? WHERE id = ?", (target_role, student_id))
+
+
+def set_student_domain(student_id: str, domain_id: str) -> None:
+    """Persist the locked career domain on an existing student row if unset."""
+    with tx() as c:
+        c.execute(
+            "UPDATE students SET domain_id = ? WHERE id = ? AND (domain_id IS NULL OR domain_id = '')",
+            (domain_id, student_id),
+        )
 
 
 def save_profile(student_id: str, profile: StudentProfile, at: str | None = None) -> str:
@@ -136,8 +157,8 @@ def save_profile(student_id: str, profile: StudentProfile, at: str | None = None
 
 # One student with the organization it belongs to (NULL org_* for an individual learner).
 _STUDENT = (
-    "SELECT s.id, s.name, s.username, s.email, s.target_role, s.readiness_score, s.org_id, "
-    "s.main_domain, s.subdomain, s.account_status, s.must_change_password, s.phone, "
+    "SELECT s.id, s.name, s.username, s.email, s.target_role, s.domain_id, s.readiness_score, "
+    "s.org_id, s.main_domain, s.subdomain, s.account_status, s.must_change_password, s.phone, "
     "s.batch_year, s.created_at, s.email_verified, o.org_code, o.name AS org_name "
     "FROM students s LEFT JOIN organizations o ON o.id = s.org_id "
 )
@@ -1318,3 +1339,70 @@ def project_updates(student_id: str) -> list[sqlite3.Row]:
                WHERE p.student_id = ? ORDER BY u.created_at DESC, u.id DESC""",
             (student_id,),
         ).fetchall()
+
+
+# --- certificates (courses & hackathons) ---------------------------------------
+
+
+def save_certificate(
+    student_id: str,
+    *,
+    title: str,
+    kind: str,
+    issuer: str = "",
+    issued_date: str = "",
+    credential_id: str = "",
+    skills: str = "",
+    file_name: str = "",
+    file_mime: str = "",
+    file_bytes: bytes = b"",
+    extracted_text: str = "",
+    on_resume: bool = True,
+) -> int:
+    """Insert an uploaded course or hackathon certificate and return its id."""
+    with tx() as c:
+        cur = c.execute(
+            """INSERT INTO certificates
+               (student_id, title, kind, issuer, issued_date, credential_id, skills,
+                file_name, file_mime, file_bytes, extracted_text, on_resume)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                student_id,
+                title,
+                kind,
+                issuer,
+                issued_date,
+                credential_id,
+                skills,
+                file_name,
+                file_mime,
+                sqlite3.Binary(file_bytes) if file_bytes else None,
+                extracted_text,
+                int(bool(on_resume)),
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def certificates(student_id: str) -> list[sqlite3.Row]:
+    """Every certificate uploaded by the student, newest first."""
+    with tx() as c:
+        return c.execute(
+            """SELECT id, student_id, title, kind, issuer, issued_date, credential_id, skills,
+                      file_name, file_mime, file_bytes, extracted_text, on_resume, created_at
+               FROM certificates WHERE student_id = ? ORDER BY id DESC""",
+            (student_id,),
+        ).fetchall()
+
+
+def set_certificate_on_resume(student_id: str, cert_id: int, on_resume: bool) -> None:
+    with tx() as c:
+        c.execute(
+            "UPDATE certificates SET on_resume = ? WHERE id = ? AND student_id = ?",
+            (int(bool(on_resume)), cert_id, student_id),
+        )
+
+
+def delete_certificate(student_id: str, cert_id: int) -> None:
+    with tx() as c:
+        c.execute("DELETE FROM certificates WHERE id = ? AND student_id = ?", (cert_id, student_id))

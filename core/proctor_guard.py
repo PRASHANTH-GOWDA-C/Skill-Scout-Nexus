@@ -223,188 +223,236 @@ def save_proctor_breach_to_db(
 
 
 def proctor_html_component(page_type: str = "assessment") -> str:
-    """Generate self-contained HTML/JS proctoring guard."""
+    """Generate strict self-contained HTML/JS proctoring guard:
+    - Enforces live Camera + Microphone permission
+    - Enforces Fullscreen mode with blocking overlay until active
+    - Blocks tab switching, app/window switching, fullscreen exit, copy/paste, and devtools keys
+    - Silent visual alerts (zero annoying background beep/oscillator sound)
+    """
     template = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
-  #proctor-video, #proctor-canvas { display: none; }
+  #proctor-canvas { display: none; }
 </style>
 </head>
 <body>
-<video id="proctor-video" autoplay playsinline muted></video>
 <canvas id="proctor-canvas" width="64" height="48"></canvas>
 <script>
 (function() {
   const pageType = __PAGE_TYPE__;
-  const targets = [document];
-  const winTargets = [window];
-  try {
-    if (window.parent && window.parent.document) {
-      targets.push(window.parent.document);
-      winTargets.push(window.parent);
-    }
-  } catch(e) {
-    console.warn("[ProctorGuard] Parent document cross-origin restricted:", e);
+  const parentWin = window.parent || window;
+  const parentDoc = parentWin.document || document;
+
+  // Avoid duplicate listeners on Streamlit reruns in same session
+  if (!parentWin.__piqProctor) {
+    parentWin.__piqProctor = { active: false, wasFullscreen: false, strikes: 0, lastAt: 0 };
+  }
+  const state = parentWin.__piqProctor;
+  state.active = true;
+
+  // Ensure live monitor pill & strict fullscreen overlay exist inside parent document
+  let pip = parentDoc.getElementById("piq-proctor-pip");
+  if (!pip) {
+    pip = parentDoc.createElement("div");
+    pip.id = "piq-proctor-pip";
+    pip.style.cssText = [
+      "position:fixed", "bottom:14px", "right:14px", "z-index:99990",
+      "background:#111a1c", "color:#e3eae8", "border:1px solid #0d6670",
+      "border-radius:10px", "padding:8px 10px", "display:flex",
+      "align-items:center", "gap:10px", "font:12px/1.3 system-ui,sans-serif",
+      "box-shadow:0 6px 20px rgba(0,0,0,0.35)"
+    ].join(";");
+    pip.innerHTML =
+      '<video id="piq-proctor-vid" autoplay playsinline muted style="width:76px;height:54px;border-radius:6px;background:#000;object-fit:cover;"></video>' +
+      '<div>' +
+        '<div style="font-weight:700;color:#6ccbc4;">Strict Proctoring ON</div>' +
+        '<div id="piq-proctor-hw">Checking Cam &amp; Mic…</div>' +
+        '<div id="piq-proctor-fs">Fullscreen required</div>' +
+      '</div>';
+    parentDoc.body.appendChild(pip);
   }
 
-  // --- 1. AudioContext Beep ---
-  function playBeep() {
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(880, ctx.currentTime); // 880 Hz loud beep
-      gain.gain.setValueAtTime(0.5, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.55);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.6);
-    } catch(err) {
-      console.warn("[ProctorGuard] AudioContext beep error:", err);
+  let overlay = parentDoc.getElementById("piq-proctor-lock-overlay");
+  if (!overlay) {
+    overlay = parentDoc.createElement("div");
+    overlay.id = "piq-proctor-lock-overlay";
+    overlay.style.cssText = [
+      "position:fixed", "inset:0", "z-index:99999",
+      "background:rgba(12,18,20,0.92)", "color:#f0f5f4",
+      "display:flex", "flex-direction:column", "align-items:center", "justify-content:center",
+      "text-align:center", "padding:24px", "font-family:system-ui,sans-serif"
+    ].join(";");
+    overlay.innerHTML =
+      '<div style="max-width:480px;background:#1a2528;border:1px solid #1f7f86;border-radius:14px;padding:28px;">' +
+        '<h2 style="margin:0 0 10px;color:#6ccbc4;">Proctored Assessment Lock</h2>' +
+        '<p id="piq-lock-msg" style="margin:0 0 18px;font-size:14px;line-height:1.5;color:#cbd5d3;">' +
+          'Camera, microphone, and fullscreen mode are mandatory. Switching tabs, switching apps, ' +
+          'or exiting fullscreen counts toward a 3-strike auto-submission.' +
+        '</p>' +
+        '<button id="piq-enter-fs-btn" style="background:#0d6670;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer;">' +
+          'Enable Camera, Mic &amp; Enter Fullscreen' +
+        '</button>' +
+        '<div id="piq-lock-err" style="margin-top:12px;color:#ff8675;font-size:13px;"></div>' +
+      '</div>';
+    parentDoc.body.appendChild(overlay);
+  }
+
+  const vidEl = parentDoc.getElementById("piq-proctor-vid");
+  const hwEl = parentDoc.getElementById("piq-proctor-hw");
+  const fsEl = parentDoc.getElementById("piq-proctor-fs");
+  const errEl = parentDoc.getElementById("piq-lock-err");
+  const enterBtn = parentDoc.getElementById("piq-enter-fs-btn");
+
+  function syncOverlay() {
+    const fsOk = !!parentDoc.fullscreenElement;
+    const camOk = !!(state.stream && state.stream.getVideoTracks().some(t => t.readyState === "live"));
+    const micOk = !!(state.stream && state.stream.getAudioTracks().some(t => t.readyState === "live"));
+    if (fsOk) state.wasFullscreen = true;
+    if (hwEl) hwEl.textContent = (camOk ? "Cam ON" : "Cam OFF") + " · " + (micOk ? "Mic ON" : "Mic OFF");
+    if (fsEl) fsEl.textContent = fsOk ? "Fullscreen ON" : "Fullscreen OFF";
+    if (overlay) {
+      overlay.style.display = (state.active && (!fsOk || !camOk || !micOk)) ? "flex" : "none";
     }
   }
 
-  // --- 2. Report Violation to Parent URL & postMessage ---
-  let lastReported = 0;
-  function reportViolation(type, detail) {
-    const now = Date.now();
-    if (now - lastReported < 1500) return; // Debounce rapid bursts
-    lastReported = now;
-
-    playBeep();
-
+  async function requestPermissionsAndFullscreen() {
     try {
-      if (window.parent) {
-        window.parent.postMessage({
-          type: "PROCTOR_VIOLATION",
-          event: type,
-          detail: detail,
-          timestamp: now
-        }, "*");
-
-        const parentUrl = new URL(window.parent.location.href);
-        const curStrikes = parseInt(parentUrl.searchParams.get("proctor_strikes") || "0", 10);
-        let nextStrikes = curStrikes;
-        if (type === "TAB_SWITCH" || type === "WINDOW_BLUR") {
-          nextStrikes += 1;
-        }
-        parentUrl.searchParams.set("proctor_event", type + ":" + now);
-        parentUrl.searchParams.set("proctor_strikes", nextStrikes.toString());
-        if (parentUrl.href !== window.parent.location.href) {
-          window.parent.location.href = parentUrl.href;
-        }
+      if (errEl) errEl.textContent = "";
+      if (!state.stream || !state.stream.active) {
+        state.stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 240, height: 180 },
+          audio: true
+        });
       }
-    } catch(err) {
-      console.error("[ProctorGuard] Reporting error:", err);
+      if (vidEl && vidEl.srcObject !== state.stream) {
+        vidEl.srcObject = state.stream;
+        vidEl.play().catch(() => {});
+      }
+      if (!parentDoc.fullscreenElement && parentDoc.documentElement.requestFullscreen) {
+        await parentDoc.documentElement.requestFullscreen();
+      }
+      syncOverlay();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = "Camera, Microphone, and Fullscreen permission are required (" + (e.message || e.name) + ").";
+      }
+      reportViolation("CAMERA_ABSENT", "Camera or microphone permission denied");
     }
   }
 
-  // --- 3. Copy / Paste / ContextMenu Lock ---
-  function blockEvent(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    return false;
+  if (enterBtn) {
+    enterBtn.onclick = requestPermissionsAndFullscreen;
   }
-  targets.forEach(doc => {
-    ["contextmenu", "copy", "cut", "paste", "dragstart"].forEach(evtName => {
-      doc.addEventListener(evtName, blockEvent, true);
-    });
-  });
 
-  // --- 4. Tab-Switch & Window Blur Listeners ---
-  targets.forEach(doc => {
-    doc.addEventListener("visibilitychange", function() {
-      if (doc.visibilityState === "hidden") {
+  // Try starting media stream automatically if already permitted
+  if (!state.stream && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ video: { width: 240, height: 180 }, audio: true })
+      .then(s => {
+        state.stream = s;
+        if (vidEl) { vidEl.srcObject = s; vidEl.play().catch(() => {}); }
+        syncOverlay();
+      })
+      .catch(() => syncOverlay());
+  } else if (state.stream && vidEl) {
+    vidEl.srcObject = state.stream;
+    syncOverlay();
+  }
+
+  function reportViolation(type, detail) {
+    if (!state.active) return;
+    const now = Date.now();
+    if (now - state.lastAt < 1800) return;
+    state.lastAt = now;
+    if (type === "TAB_SWITCH" || type === "WINDOW_BLUR" || type === "FULLSCREEN_EXIT" || type === "CAMERA_ABSENT") {
+      state.strikes += 1;
+    }
+    try {
+      const u = new URL(parentWin.location.href);
+      u.searchParams.set("proctor_event", type + ":" + now);
+      if (state.strikes >= 3) {
+        // Breach reached: force reload URL so Streamlit submits immediately
+        parentWin.location.href = u.href;
+      } else {
+        parentWin.history.replaceState({}, "", u.href);
+      }
+    } catch (e) {}
+  }
+
+  if (!parentWin.__piqProctorBound) {
+    parentWin.__piqProctorBound = true;
+    const blockEvt = (e) => {
+      if (!state.active) return;
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    };
+    ["contextmenu", "copy", "cut", "paste", "dragstart"].forEach(evt => {
+      parentDoc.addEventListener(evt, blockEvt, true);
+    });
+
+    parentDoc.addEventListener("keydown", function(e) {
+      if (!state.active) return;
+      if (
+        e.key === "F12" || e.key === "F11" || e.key === "PrintScreen" ||
+        ((e.ctrlKey || e.metaKey) && ["c","v","x","t","w","tab","u","i","j"].includes((e.key || "").toLowerCase()))
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+
+    parentDoc.addEventListener("visibilitychange", function() {
+      if (state.active && parentDoc.visibilityState === "hidden") {
         reportViolation("TAB_SWITCH", "Tab switched or browser minimized");
       }
     }, true);
-  });
 
-  winTargets.forEach(win => {
-    win.addEventListener("blur", function() {
-      reportViolation("WINDOW_BLUR", "Browser window lost focus");
+    parentWin.addEventListener("blur", function() {
+      if (!state.active) return;
+      setTimeout(() => {
+        const ae = parentDoc.activeElement;
+        if (ae && ae.tagName === "IFRAME") return;
+        reportViolation("WINDOW_BLUR", "Application or window lost focus");
+      }, 90);
     }, true);
-  });
 
-  // --- 5. Webcam Presence Check ---
-  const video = document.getElementById("proctor-video");
+    parentDoc.addEventListener("fullscreenchange", function() {
+      syncOverlay();
+      if (state.active && state.wasFullscreen && !parentDoc.fullscreenElement) {
+        reportViolation("FULLSCREEN_EXIT", "Exited fullscreen mode during assessment");
+      }
+    }, true);
+  }
+
+  // Camera lens cover check (pitch black check only; stillness never penalized)
   const canvas = document.getElementById("proctor-canvas");
   const ctx = canvas ? canvas.getContext("2d") : null;
-  let streamReady = false;
-  let prevFrame = null;
-  let inactiveDuration = 0;
-  const CHECK_MS = 3000;
-
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    navigator.mediaDevices.getUserMedia({ video: { width: 120, height: 90 } })
-      .then(stream => {
-        video.srcObject = stream;
-        video.play().catch(e => console.warn("Video play error:", e));
-        streamReady = true;
-      })
-      .catch(err => {
-        console.warn("[ProctorGuard] Camera permission denied or device absent:", err);
-        reportViolation("CAMERA_ABSENT", "Webcam access denied or unavailable");
-      });
-  } else {
-    reportViolation("CAMERA_ABSENT", "navigator.mediaDevices not supported");
-  }
-
   if (ctx) {
     setInterval(function() {
-      if (!streamReady || video.readyState < 2) {
-        inactiveDuration += CHECK_MS;
-        if (inactiveDuration >= 5000) {
-          reportViolation("CAMERA_ABSENT", "Webcam stream absent or not ready");
-        }
-        return;
-      }
-
+      syncOverlay();
+      if (!state.active || !vidEl || vidEl.readyState < 2) return;
       try {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const d = img.data;
-        let sumBrightness = 0;
-        let diffMotion = 0;
-        const count = d.length / 4;
-
-        for (let i = 0; i < d.length; i += 4) {
-          const r = d[i], g = d[i+1], b = d[i+2];
-          sumBrightness += (r + g + b) / 3;
-          if (prevFrame) {
-            diffMotion += Math.abs(r - prevFrame[i]);
-            diffMotion += Math.abs(g - prevFrame[i+1]);
-            diffMotion += Math.abs(b - prevFrame[i+2]);
+        ctx.drawImage(vidEl, 0, 0, canvas.width, canvas.height);
+        const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i+1] + d[i+2]) / 3;
+        const avg = sum / (d.length / 4);
+        if (avg < 4) {
+          state.darkCount = (state.darkCount || 0) + 1;
+          if (state.darkCount >= 2) {
+            reportViolation("CAMERA_ABSENT", "Camera covered or completely black");
+            state.darkCount = 0;
           }
-        }
-
-        const avgBrightness = sumBrightness / count;
-        const avgMotion = prevFrame ? (diffMotion / (count * 3)) : 10;
-        prevFrame = new Uint8ClampedArray(d);
-
-        // Heuristic: pitch black (< 12) or frozen static (< 0.4 difference)
-        const isDead = (avgBrightness < 12) || (prevFrame && avgMotion < 0.4);
-        if (isDead) {
-          inactiveDuration += CHECK_MS;
         } else {
-          inactiveDuration = 0;
+          state.darkCount = 0;
         }
-
-        if (inactiveDuration >= 5000) {
-          reportViolation("CAMERA_ABSENT", "Webcam black or static for >5s");
-        }
-      } catch(e) {
-        console.warn("[ProctorGuard] Analysis error:", e);
-      }
-    }, CHECK_MS);
+      } catch (e) {}
+    }, 3000);
   }
+  syncOverlay();
 })();
 </script>
 </body>
@@ -412,28 +460,45 @@ def proctor_html_component(page_type: str = "assessment") -> str:
     return template.replace("__PAGE_TYPE__", json.dumps(page_type))
 
 
+def clear_proctor_overlay() -> None:
+    """Remove any parent-document proctor overlay/monitor and release fullscreen after exit/completion."""
+    components.html(
+        """<script>
+        (function(){
+          try {
+            const p = window.parent || window;
+            const d = p.document || document;
+            if (p.__piqProctor) { p.__piqProctor.active = false; p.__piqProctor.wasFullscreen = false; }
+            const ov = d.getElementById("piq-proctor-lock-overlay");
+            if (ov) ov.remove();
+            const pip = d.getElementById("piq-proctor-pip");
+            if (pip) pip.remove();
+            if (d.fullscreenElement && d.exitFullscreen) { d.exitFullscreen().catch(()=>{}); }
+          } catch(e){}
+        })();
+        </script>""",
+        height=0,
+        width=0,
+    )
+
+
 def render_proctor_guard(
     page_type: str = "assessment",
     on_breach: Callable[[], None] | None = None,
 ) -> ProctorGuardStatus:
     """Inject hidden proctoring script, read incoming strike events, and handle breach callbacks."""
-    # Process query param events if sent by the JS component (each one counts once)
     raw_event = st.query_params.get("proctor_event")
     if raw_event and raw_event not in _load().seen_events:
         _save(_load().with_event_seen(raw_event))
         event_type = raw_event.split(":")[0] if ":" in raw_event else raw_event
-        if event_type in (FLAG_TAB_SWITCH, FLAG_WINDOW_BLUR):
-            record_strike(event_type, "Tab switched or window blur detected")
-        elif event_type == FLAG_CAMERA_ABSENT:
-            record_camera_warning("Webcam feed is inactive, black, or static")
+        if event_type in (FLAG_TAB_SWITCH, FLAG_WINDOW_BLUR, "FULLSCREEN_EXIT", FLAG_CAMERA_ABSENT):
+            record_strike(event_type, "Proctoring rule violation detected")
         with contextlib.suppress(Exception):
             del st.query_params["proctor_event"]
 
-    # Check 3-strike rule
     if is_breached() and on_breach:
         on_breach()
 
-    # Inject invisible iframe component (0 height, 0 width)
     components.html(proctor_html_component(page_type), height=0, width=0)
 
     return ProctorGuardStatus(

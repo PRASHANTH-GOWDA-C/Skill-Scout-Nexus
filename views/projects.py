@@ -24,12 +24,12 @@ def _fields(prefix: str, row: dict | None = None) -> dict:
             desc = intel.one_line_pitch
             summary_lines = [desc, *bullets] if desc else bullets
             row = {
-                "name": intel.project_title,
-                "repo_url": st.session_state.get(_GH_URL, ""),
-                "tech": ", ".join(intel.tech_stack),
+                "name": intel.project_title[:80],
+                "repo_url": st.session_state.get(_GH_URL, "")[:300],
+                "tech": ", ".join(intel.tech_stack)[:580],
                 "status": "Done",
-                "summary": "\n".join(summary_lines),
-                "readme": st.session_state.get("gh_readme_raw", ""),
+                "summary": "\n".join(summary_lines)[:3900],
+                "readme": st.session_state.get("gh_readme_raw", "")[:24000],
                 "on_resume": True,
             }
     name = st.text_input("Repository name *", value=row.get("name", ""), key=f"{prefix}_name")
@@ -77,6 +77,13 @@ def _fields(prefix: str, row: dict | None = None) -> dict:
 def _save(sid: str, fields: dict, project_id: int | None = None) -> bool:
     try:
         services.save_project(sid, project_id=project_id, **fields)
+        services.sync_project_to_profile_and_resume(
+            sid,
+            name=fields["name"],
+            tech=fields["tech"],
+            summary=fields["summary"],
+            on_resume=bool(fields.get("on_resume", True)),
+        )
     except services.ServiceError as e:
         st.error(formatter.md_escape(str(e)), icon=":material/error:")
         return False
@@ -217,9 +224,42 @@ with list_col:
                         else:
                             st.session_state[_GH_INTEL] = intel
                             st.session_state[_GH_URL] = gh_url.strip()
-                            # Save viva questions for the Voice Interviewer
                             if intel.viva_questions:
                                 st.session_state[gh.VIVA_SESSION_KEY] = intel.viva_questions
+                            # Auto-save to Project Space & sync into Profile and Resume immediately
+                            summary_lines = [intel.one_line_pitch, *intel.star_bullets] if intel.one_line_pitch else list(intel.star_bullets)
+                            summary_txt = "\n".join(summary_lines)[:3900]
+                            tech_txt = ", ".join(intel.tech_stack)[:580]
+                            proj_name = (intel.project_title or "GitHub Project")[:80]
+                            existing_proj = next(
+                                (p for p in space.projects if p["name"].lower() == proj_name.lower()),
+                                None,
+                            )
+                            try:
+                                services.save_project(
+                                    sid,
+                                    project_id=existing_proj["id"] if existing_proj else None,
+                                    name=proj_name,
+                                    repo_url=gh_url.strip()[:300],
+                                    tech=tech_txt,
+                                    status="Done",
+                                    summary=summary_txt,
+                                    readme=readme[:24000],
+                                    on_resume=True,
+                                )
+                                services.sync_project_to_profile_and_resume(
+                                    sid,
+                                    name=proj_name,
+                                    tech=tech_txt,
+                                    summary=summary_txt,
+                                    on_resume=True,
+                                )
+                                st.toast(
+                                    f"Saved '{proj_name}' and updated your profile & resume!",
+                                    icon=":material/task_alt:",
+                                )
+                            except services.ServiceError as exc:
+                                st.warning(formatter.md_escape(str(exc)), icon=":material/warning:")
                             st.rerun()
 
         # Display last successful result
@@ -245,10 +285,14 @@ with list_col:
     new_expanded = not space.projects or bool(st.session_state.get(_GH_INTEL))
     with (
         st.expander("New repository", icon=":material/add:", expanded=new_expanded),
-        st.form("new_project", border=False, clear_on_submit=True),
+        st.form("new_project", border=False),
     ):
         fields = _fields("new")
         if st.form_submit_button("Create repository", type="primary") and _save(sid, fields):
+            st.session_state.pop(_GH_INTEL, None)
+            st.session_state.pop(_GH_URL, None)
+            st.session_state.pop("gh_readme_raw", None)
+            st.toast("Repository saved and synced to your profile & resume!", icon=":material/task_alt:")
             st.rerun()
     if not space.projects:
         st.caption("No repositories yet. Add one above; finished ones belong on your resume.")

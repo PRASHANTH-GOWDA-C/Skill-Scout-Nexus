@@ -87,7 +87,7 @@ def _setup(sid: str, profile: services.StudentProfile) -> None:
 
     setup_col, next_col = st.columns([3, 2], gap="medium")
     with setup_col, st.container(border=True):
-        st.subheader("Set up a quiz", anchor=False)
+        st.subheader("Set up a multi-topic quiz", anchor=False)
         st.markdown(formatter.syllabus_line(domain.name, profile.target_role))
         chosen = st.pills(
             "Topics",
@@ -119,8 +119,10 @@ def _setup(sid: str, profile: services.StudentProfile) -> None:
         st.dataframe(formatter.spec_table(spec.parts()), width="stretch")
         st.caption(formatter.spec_note(spec.total, spec.batches, settings().mock_mode))
         if st.button("Generate quiz", type="primary", icon=":material/quiz:"):
+            proctor_guard.reset_proctor_state()
             run = run_agent("Quiz agent", lambda ev: services.start_quiz_run(sid, spec, ev))
             if run:
+                st.session_state["assessment_active"] = True
                 st.session_state[RUN] = run
                 st.rerun()
         show_last_run("Quiz agent")  # keeps a failed generation visible
@@ -131,6 +133,7 @@ def _setup(sid: str, profile: services.StudentProfile) -> None:
 
 
 def _take(sid: str, run: services.QuizRun) -> None:
+    st.session_state["assessment_active"] = True
     proctor_guard.render_proctor_guard(page_type="quiz")
     proctor_guard.render_warning_banner()
 
@@ -162,12 +165,29 @@ def _take(sid: str, run: services.QuizRun) -> None:
         except Exception:
             pass
         st.session_state.pop(RUN, None)
+        st.session_state["assessment_active"] = False
         st.rerun()
 
     topics = list(dict.fromkeys(p.topic for p in run.parts))
-    st.subheader(f"{formatter.run_title(topics)} · {run.total} questions", anchor=False)
+    head_l, head_r = st.columns([3, 2], vertical_alignment="center")
+    with head_l:
+        st.subheader(f"{formatter.run_title(topics)} · {run.total} questions", anchor=False)
+    with head_r, st.container(horizontal=True):
+        if st.button("Restart quiz", icon=":material/restart_alt:", key="quiz_restart_active"):
+            for i in range(1, run.total + 1):
+                st.session_state.pop(f"{run.key}-{i}", None)
+            st.session_state.pop(BLANKS, None)
+            proctor_guard.reset_proctor_state()
+            st.rerun()
+        if st.button("Exit quiz", type="secondary", icon=":material/logout:", key="quiz_exit_active"):
+            st.session_state.pop(RUN, None)
+            st.session_state.pop(BLANKS, None)
+            st.session_state["assessment_active"] = False
+            proctor_guard.reset_proctor_state()
+            proctor_guard.clear_proctor_overlay()
+            st.rerun()
     show_last_run("Quiz agent")
-    st.caption("Pick one answer for each question, then submit; nothing is marked until you do.")
+    st.caption("Pick one answer for each question, then submit; sidebar navigation is locked until you Exit.")
     key = run.key  # fresh widget keys per quiz: no stale answers
     with st.form(f"quiz-{key}", border=False):
         chosen, n, shown = [], 0, None
@@ -200,6 +220,7 @@ def _take(sid: str, run: services.QuizRun) -> None:
         st.session_state.pop(BLANKS, None)
         st.session_state[RESULT] = services.submit_quiz_run(sid, run, chosen)
         st.session_state.pop(RUN)
+        st.session_state["assessment_active"] = False
         st.rerun()
 
 
@@ -216,10 +237,12 @@ BREAKDOWNS = (
 
 
 def _review(result: services.QuizRunResult) -> None:
+    st.session_state["assessment_active"] = False
+    proctor_guard.clear_proctor_overlay()
     if proctor_guard.is_breached():
         st.error(
             "🚨 **PROCTOR BREACH:** This quiz was force-submitted due to 3 proctoring violations "
-            "(tab switching, window blur, or camera absence).",
+            "(tab switching, window blur, fullscreen exit, or camera/mic absence).",
             icon=":material/gavel:",
         )
     topics = list(dict.fromkeys(p.topic for p in result.run.parts))
@@ -238,13 +261,11 @@ def _review(result: services.QuizRunResult) -> None:
         )
         st.markdown(formatter.next_difficulty_md(result.next_difficulty))
         with st.container(horizontal=True, vertical_alignment="center"):
-            if st.button("New quiz", type="primary", icon=":material/restart_alt:"):
+            # Requirement 4: Restart is NOT available after completing and getting answers; only Exit.
+            if st.button("Exit quiz review", type="primary", icon=":material/logout:", key="quiz_review_exit"):
                 proctor_guard.reset_proctor_state()
-                st.session_state.pop(RESULT)
+                st.session_state.pop(RESULT, None)
                 st.rerun()
-            st.page_link(
-                "views/plan.py", label="Open Weekly plan", icon=":material/calendar_month:"
-            )
             today = formatter.local_today()
             st.download_button(
                 "Download review (.md)",
@@ -293,16 +314,149 @@ def _review(result: services.QuizRunResult) -> None:
 
 
 page_header(
-    "Quiz",
-    "Pick one or more topics, how many questions each and the mix of easy, medium and hard. "
-    "A critic checks every question before you see it; your scores set the next difficulty "
-    "and next week's plan.",
+    "Quiz Arena",
+    "Proctored quizzes with camera, microphone & fullscreen lock: take a custom Multi-Topic "
+    "quiz or a Quick Critic-Checked Skill quiz. Scores feed your readiness and weekly plan.",
 )
 sid, profile = require_profile()
+
+
+def _quick_critic_quiz_tab(sid: str) -> None:
+    """Quick single-skill critic-checked quiz (merged from 4. Critic-checked quiz)."""
+    from piq import journey
+    from piq.config import CRITIC_QUIZ_DEFAULT, CRITIC_QUIZ_DEFAULT_DIFFICULTY, CRITIC_QUIZ_SIZES, DIFFICULTIES
+
+    BATCH, GRADE, ROUND = "cq_batch", "cq_grade", "cq_round"
+    batch = st.session_state.get(BATCH)
+    grade: journey.QuizGrade | None = st.session_state.get(GRADE)
+
+    if batch is None:
+        st.session_state["assessment_active"] = False
+        proctor_guard.clear_proctor_overlay()
+        skills = journey.quiz_skills(sid)
+        with st.form("cq_unified_setup", border=True):
+            skill = st.selectbox(
+                "Skill", skills, help="Your skill gaps come first, then the role's other skills."
+            )
+            left, right = st.columns(2)
+            difficulty = left.segmented_control(
+                "Difficulty",
+                DIFFICULTIES,
+                default=CRITIC_QUIZ_DEFAULT_DIFFICULTY,
+                format_func=str.capitalize,
+            )
+            count = right.segmented_control("Questions", CRITIC_QUIZ_SIZES, default=CRITIC_QUIZ_DEFAULT)
+            if st.form_submit_button("Start proctored skill quiz", type="primary", icon=":material/verified:"):
+                try:
+                    proctor_guard.reset_proctor_state()
+                    with st.spinner("Writing questions and checking each one"):
+                        st.session_state[BATCH] = journey.critic_quiz(
+                            sid,
+                            skill or "",
+                            difficulty or CRITIC_QUIZ_DEFAULT_DIFFICULTY,
+                            count or CRITIC_QUIZ_DEFAULT,
+                        )
+                    st.session_state[GRADE] = None
+                    st.session_state[ROUND] = st.session_state.get(ROUND, 0) + 1
+                    st.session_state["assessment_active"] = True
+                    st.rerun()
+                except services.ServiceError as e:
+                    st.error(formatter.md_escape(str(e)), icon=":material/error:")
+        return
+
+    n = st.session_state.get(ROUND, 0)
+    if grade is None:
+        st.session_state["assessment_active"] = True
+        proctor_guard.render_proctor_guard(page_type="critic_quiz")
+        proctor_guard.render_warning_banner()
+        if proctor_guard.is_breached():
+            answers = [st.session_state.get(f"cq{n}_{i}") for i in range(len(batch.questions))]
+            st.session_state[GRADE] = journey.grade_quiz(
+                sid, batch, answers, proctor_flags=[proctor_guard.FLAG_PROCTOR_BREACH]
+            )
+            st.session_state["assessment_active"] = False
+            st.rerun()
+        with st.container(horizontal=True):
+            if st.button("Restart quiz", icon=":material/restart_alt:", key="cq_restart_btn"):
+                for i in range(len(batch.questions)):
+                    st.session_state.pop(f"cq{n}_{i}", None)
+                st.session_state[ROUND] = n + 1
+                proctor_guard.reset_proctor_state()
+                st.rerun()
+            if st.button("Exit quiz", type="secondary", icon=":material/logout:", key="cq_exit_active"):
+                st.session_state.pop(BATCH, None)
+                st.session_state.pop(GRADE, None)
+                st.session_state["assessment_active"] = False
+                proctor_guard.reset_proctor_state()
+                proctor_guard.clear_proctor_overlay()
+                st.rerun()
+        journey.preload_next_quiz(sid, batch)
+        with st.form(f"cq_answers_{n}", border=False):
+            answers: list[int | None] = []
+            for i, q in enumerate(batch.questions):
+                answers.append(
+                    st.radio(
+                        f"**{i + 1}.** {formatter.md_escape(q.text)}",
+                        range(4),
+                        format_func=lambda j, q=q: formatter.md_escape(journey.option_label(q, j)),
+                        index=None,
+                        key=f"cq{n}_{i}",
+                    )
+                )
+            if st.form_submit_button("Submit answers", type="primary", icon=":material/grading:"):
+                try:
+                    st.session_state[GRADE] = journey.grade_quiz(sid, batch, answers)
+                    st.session_state["assessment_active"] = False
+                    st.rerun()
+                except services.ServiceError as e:
+                    st.error(formatter.md_escape(str(e)), icon=":material/error:")
+    else:
+        st.session_state["assessment_active"] = False
+        proctor_guard.clear_proctor_overlay()
+        if proctor_guard.is_breached():
+            st.error(
+                "🚨 **PROCTOR BREACH:** This quiz was force-submitted due to 3 proctoring violations.",
+                icon=":material/gavel:",
+            )
+        skipped = sum(st.session_state.get(f"cq{n}_{i}") is None for i in range(grade.total))
+        stat_row(
+            [
+                Stat("Score", f"{grade.score}/{grade.total}"),
+                Stat("Percent", f"{grade.percent}%"),
+                Stat("Skipped", str(skipped)),
+            ]
+        )
+        # Only Exit allowed after answers are revealed (no Restart)
+        if st.button("Exit quiz review", type="primary", icon=":material/logout:", key="cq_exit_done"):
+            st.session_state.pop(BATCH, None)
+            st.session_state.pop(GRADE, None)
+            proctor_guard.reset_proctor_state()
+            st.rerun()
+        for i, (q, ok) in enumerate(zip(batch.questions, grade.correct, strict=True)):
+            with st.container(border=True):
+                st.markdown(f"{'✅' if ok else '❌'} **{i + 1}.** {formatter.md_escape(q.text)}")
+                st.markdown(
+                    f"Answer: **{formatter.md_escape(journey.option_label(q, q.correct_index))}**  \n"
+                    f":gray[{formatter.md_escape(q.explanation)}]"
+                )
+
 
 if result := st.session_state.get(RESULT):
     _review(result)
 elif run := st.session_state.get(RUN):
     _take(sid, run)
+elif st.session_state.get("cq_batch") is not None:
+    _quick_critic_quiz_tab(sid)
 else:
-    _setup(sid, profile)
+    st.session_state["assessment_active"] = False
+    proctor_guard.clear_proctor_overlay()
+    tab_multi, tab_critic = st.tabs(
+        [
+            ":material/quiz: Multi-Topic Adaptive Quiz",
+            ":material/verified: Quick Skill Critic Quiz",
+        ]
+    )
+    with tab_multi:
+        _setup(sid, profile)
+    with tab_critic:
+        _quick_critic_quiz_tab(sid)

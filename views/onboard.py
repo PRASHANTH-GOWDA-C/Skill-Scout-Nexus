@@ -398,22 +398,39 @@ def _signed_out() -> None:
 
 
 def _roles(profile: services.StudentProfile | None, key: str) -> tuple[list[str], int]:
-    """The domain picker and the roles it offers. A student whose domain is locked keeps it."""
+    """Locked career domain and current target role (never re-asked inside pages; editable
+    role lives in Student Settings)."""
     sid = st.session_state.get("student_id")
-    lock = services.locked_domain(sid) if profile else None
+    me = current_student()
+    lock = services.locked_domain(sid)
+    role = (me or {}).get("target_role") or (profile.target_role if profile else None)
     if lock:
-        st.markdown(formatter.locked_md(lock.domain.name, lock.since, lock.by))
+        st.markdown(
+            f":material/lock: **Career domain:** {formatter.md_escape(lock.domain.name)} · "
+            f"**Target role:** {formatter.md_escape(role or '')}"
+        )
+        st.caption("Your Career domain is locked. To change your target job role, open Settings in the sidebar.")
         roles = services.domain_roles(lock.domain.id)
-        return roles, roles.index(profile.target_role) if profile.target_role in roles else 0
-    role = profile.target_role if profile else (current_student() or {}).get("target_role")
+        return roles, roles.index(role) if role in roles else 0
     return _roles_for(role, key)
 
 
 def _form(profile: services.StudentProfile | None, key: str) -> None:
-    """The resume form; a valid submission runs the profile agent and opens the profile."""
-    roles, role_index = _roles(profile, key)
+    """The resume form; uses the student's locked domain and current Settings target role."""
+    me = current_student()
+    sid = st.session_state.get("student_id")
+    lock = services.locked_domain(sid)
+    role = (me or {}).get("target_role") or (profile.target_role if profile else None)
+    if lock and role:
+        st.markdown(
+            f":material/lock: **Career domain:** {formatter.md_escape(lock.domain.name)} · "
+            f"**Target role:** {formatter.md_escape(role)}"
+        )
+        st.caption("Change your target job role anytime in **Settings** (sidebar).")
+    else:
+        roles, role_index = _roles(profile, key)
+        role = roles[role_index] if roles else ""
     with st.form(f"onboard_{key}", border=False):
-        role = st.selectbox("Target role", roles, index=role_index)
         st.caption("Use one: upload your resume, or pick a sample to try the app.")
         upload = st.file_uploader("Resume file", type=["pdf", "docx", "txt"])
         sample = st.selectbox(

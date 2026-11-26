@@ -256,34 +256,142 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
 
 
 page_header(
-    "Weekly plan",
-    "Seven days of study, most of it on your weakest topics. Each new week is planned from "
-    "your latest quiz scores, and a critic checks it before you see it.",
+    "Study Plan & Roadmap",
+    "Unified 7-day study roadmap, weakness-driven weekly plan, calendar export, and curated "
+    "books & repositories. Plans generated in either tab stay synchronized everywhere.",
 )
 sid, profile = require_profile()
+
+tab_weekly, tab_roadmap, tab_library = st.tabs(
+    [
+        ":material/calendar_month: Weekly Study Plan",
+        ":material/route: 7-Day Skill-Gap Roadmap",
+        ":material/menu_book: Books & Field Guides",
+    ]
+)
+
 ov = services.plan_overview(sid, profile)
 
-col_top_gen, col_top_ics = st.columns([1, 1], vertical_alignment="center")
-with col_top_gen:
-    if st.button(
-        f"Generate week {ov.next_week} plan", type="primary", icon=":material/autorenew:"
-    ) and run_agent("Planner agent", lambda ev: services.generate_next_plan(sid, ev)):
-        st.rerun()
+with tab_weekly:
+    col_top_gen, col_top_ics = st.columns([1, 1], vertical_alignment="center")
+    with col_top_gen:
+        if st.button(
+            f"Generate week {ov.next_week} plan", type="primary", icon=":material/autorenew:"
+        ) and run_agent("Planner agent", lambda ev: services.generate_next_plan(sid, ev)):
+            st.rerun()
 
-with col_top_ics:
-    if ov.plans:
-        latest = ov.plans[-1]
-        st.download_button(
-            "📥 Download 7-Day Schedule (.ics)",
-            data=partial(calendar_export.generate_plan_ics, latest),  # built on click
-            file_name=f"study-schedule-week-{latest.week_no}.ics",
-            mime="text/calendar",
-            type="primary",
-            icon=":material/event:",
-            help="Download RFC-5545 compliant 7-day schedule for Google Calendar, Outlook, Apple",
-            key="plan_top_primary_ics",
+    with col_top_ics:
+        if ov.plans:
+            latest = ov.plans[-1]
+            st.download_button(
+                "📥 Download 7-Day Schedule (.ics)",
+                data=partial(calendar_export.generate_plan_ics, latest),  # built on click
+                file_name=f"study-schedule-week-{latest.week_no}.ics",
+                mime="text/calendar",
+                type="primary",
+                icon=":material/event:",
+                help="Download RFC-5545 compliant 7-day schedule for Google Calendar, Outlook, Apple",
+                key="plan_top_primary_ics",
+            )
+
+    show_last_run("Planner agent")
+    _plans(sid, ov)
+
+with tab_roadmap:
+    from piq import journey as _j
+    from piq.config import ROADMAP_DEFAULT_SKILLS
+    from piq.services import URL_RE, ServiceError
+
+    me = _j.student(sid)
+    handed = st.session_state.get("roadmap_gaps")
+    gaps, origin = (handed, "your resume scan") if handed is not None else _j.latest_gaps(sid)
+    saved_roadmaps = _j.roadmaps(sid)
+    next_rm_week = max(
+        [*(r.week for r in saved_roadmaps), *(p.week_no for p in ov.plans)],
+        default=0,
+    ) + 1
+
+    with st.container(border=True):
+        rm_options = list(dict.fromkeys([*gaps, *_j.role_skills(me.target_role)]))
+        rm_chosen = st.multiselect(
+            "Skills to cover",
+            rm_options,
+            default=gaps[:ROADMAP_DEFAULT_SKILLS],
+            help="Seven days fit up to seven skills well; more are shared across the days.",
+            key="unified_rm_skills",
         )
+        st.caption(
+            f"Suggested from {origin} for {formatter.md_escape(me.target_role)}."
+            if gaps
+            else "No gaps found yet: pick the skills you want to strengthen."
+        )
+        rm_label = (
+            "Generate my 7-day roadmap"
+            if next_rm_week == 1
+            else f"Generate week {next_rm_week} roadmap"
+        )
+        if st.button(rm_label, type="primary", icon=":material/route:", disabled=not rm_chosen, key="unified_rm_gen"):
+            try:
+                with st.spinner("The planner agent is writing your 7-day roadmap…"):
+                    roadmap, saved_rm = _j.build_roadmap(sid, rm_chosen)
+                st.session_state["roadmap_unsaved"] = None if saved_rm else roadmap
+                st.session_state.pop("roadmap_gaps", None)
+                st.toast(f"Week {roadmap.week} roadmap generated and synced to Weekly Plan!", icon=":material/task_alt:")
+                st.rerun()
+            except ServiceError as e:
+                st.error(formatter.md_escape(str(e)), icon=":material/error:")
 
-show_last_run("Planner agent")
-_plans(sid, ov)
-_library(profile.target_role, ov.weakness)
+    unsaved_rm = st.session_state.get("roadmap_unsaved")
+    all_rms = [*saved_roadmaps, *([unsaved_rm] if unsaved_rm else [])]
+    if not all_rms:
+        st.caption("No detailed skill-gap roadmap yet. Choose skills above to generate one.")
+    else:
+        rm_weeks = [r.week for r in all_rms]
+        picked_rm_week = st.segmented_control(
+            "Roadmap Week", rm_weeks, default=rm_weeks[-1], format_func=lambda w: f"Week {w}", key="unified_rm_week"
+        )
+        cur_rm = next(r for r in all_rms if r.week == (picked_rm_week or rm_weeks[-1]))
+        rm_plan = cur_rm.plan
+        total_rm = sum(len(d.micro_tasks) for d in rm_plan.days)
+        st.subheader(
+            f"Week {cur_rm.week}: {formatter.md_escape(', '.join(rm_plan.addressed_gaps[:4]))}",
+            anchor=False,
+        )
+        st.markdown(formatter.md_escape(rm_plan.summary))
+        rm_progress = st.empty()
+        rm_done: set[str] = set()
+        for day in rm_plan.days:
+            with st.container(border=True):
+                st.markdown(
+                    f"**Day {day.day} · {formatter.md_escape(day.focus_skill)}** "
+                    f":gray[· about {day.estimated_hours:g} h]"
+                )
+                st.markdown("\n".join(f"- {formatter.md_escape(o)}" for o in day.learning_objectives))
+                links = [
+                    f"[{formatter.md_escape(r.title)}]({r.url})"
+                    if URL_RE.match(r.url)
+                    else formatter.md_escape(r.title)
+                    for r in day.resources
+                ]
+                if links:
+                    st.markdown(":material/menu_book: " + " · ".join(links))
+                for n, task in enumerate(day.micro_tasks):
+                    tkey = _j.task_key(day.day, n)
+                    if st.checkbox(
+                        formatter.md_escape(task),
+                        value=tkey in cur_rm.done,
+                        key=f"unified_rm{cur_rm.week}:{tkey}",
+                        disabled=cur_rm is unsaved_rm,
+                    ):
+                        rm_done.add(tkey)
+        rm_progress.progress(
+            len(rm_done) / total_rm if total_rm else 0,
+            text=f"{len(rm_done)} of {total_rm} tasks done",
+        )
+        if cur_rm is not unsaved_rm and rm_done != set(cur_rm.done):
+            if _j.set_tasks_done(sid, cur_rm.week, rm_done):
+                st.toast("Roadmap & Weekly Plan progress synced!", icon=":material/check_circle:")
+                st.rerun()
+
+with tab_library:
+    _library(profile.target_role, ov.weakness)

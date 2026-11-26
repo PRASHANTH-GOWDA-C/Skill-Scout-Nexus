@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS students (
     username             TEXT NOT NULL UNIQUE,
     email                TEXT,
     target_role          TEXT NOT NULL,
+    domain_id            TEXT,
     readiness_score      INTEGER,
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     org_id               INTEGER REFERENCES organizations(id),
@@ -273,3 +274,23 @@ CREATE TABLE IF NOT EXISTS project_updates (
     note       TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Uploaded certificates (courses & hackathons): synced automatically into the student's resume & profile.
+CREATE TABLE IF NOT EXISTS certificates (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id     TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    title          TEXT NOT NULL,
+    kind           TEXT NOT NULL CHECK (kind IN ('Course', 'Hackathon')),
+    issuer         TEXT NOT NULL DEFAULT '',
+    issued_date    TEXT NOT NULL DEFAULT '',
+    credential_id  TEXT NOT NULL DEFAULT '',
+    skills         TEXT NOT NULL DEFAULT '',
+    file_name      TEXT NOT NULL DEFAULT '',
+    file_mime      TEXT NOT NULL DEFAULT '',
+    file_bytes     BLOB,
+    extracted_text TEXT NOT NULL DEFAULT '',
+    on_resume      BOOLEAN NOT NULL DEFAULT 1,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_certs_student ON certificates (student_id, id DESC);

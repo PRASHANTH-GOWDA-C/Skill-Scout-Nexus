@@ -14,20 +14,12 @@ class AppPage:
 
 
 PAGES = (
-    # the placement journey
-    AppPage("onboard", "1. Onboarding and profile", "views/onboard.py"),
-    AppPage("scanner", "2. Resume scan and skill gaps", "views/scanner.py"),
-    AppPage("roadmap", "3. 7-day study roadmap", "views/roadmap.py"),
-    AppPage("critic_quiz", "4. Critic-checked quiz", "views/critic_quiz.py"),
-    AppPage("voice_interview", "5. Proctored voice assessment", "views/voice_interview.py"),
-    # more tools
-    AppPage("home", "Home", "views/home.py"),
-    AppPage("resume_builder", "Resume builder", "views/resume_builder.py"),
+    AppPage("home", "Home & Dashboard", "views/home.py"),
+    AppPage("resume_builder", "Resume & Skills Hub", "views/resume_builder.py"),
     AppPage("projects", "Project space", "views/projects.py"),  # computing domains only
-    AppPage("plan", "Weekly plan", "views/plan.py"),
-    AppPage("quiz", "Quiz", "views/quiz.py"),
-    AppPage("interview", "Mock interview", "views/interview.py"),
-    AppPage("dashboard", "Dashboard", "views/dashboard.py"),
+    AppPage("plan", "Study Plan & Roadmap", "views/plan.py"),
+    AppPage("quiz", "Quiz Arena", "views/quiz.py"),
+    AppPage("interview", "Mock Interviews", "views/interview.py"),
     AppPage("results", "Results", "views/results.py"),
 )
 STUDENT_ONLY = {"projects"}  # in the navigation only once a (computing) student is chosen

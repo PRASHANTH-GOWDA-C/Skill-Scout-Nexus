@@ -16,6 +16,7 @@ finds nothing preloaded generates as before.
 """
 
 import logging
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -39,8 +40,9 @@ from core import ai_router, preloader, speech_router
 from core.speech_router import Speech
 from database import crud
 from database.connection import get_manager
-from piq import cohort, db, prefs, syllabus
+from piq import checks, cohort, db, prefs, services, syllabus
 from piq.config import CRITIC_QUIZ_SIZES, DIFFICULTIES, settings
+from piq.schemas import AnswerEvaluation, DayPlan, Question, QuizSet, StudentProfile, WeeklyPlan
 from piq.services import MAX_ANSWER_CHARS, SAMPLES_DIR, ServiceError, sample_resumes
 
 log = logging.getLogger("piq.journey")
@@ -241,6 +243,42 @@ def scan_resume(student_id: str, filename: str, data: bytes, role: str) -> Scan:
         raise ServiceError(str(e)) from e
     if not analysis.raw_text.strip():
         raise ServiceError("No text could be read from that file. Try a PDF with real text.")
+    # Sync scan result into local profile & readiness so Home, Dashboard, Quiz & Plan match immediately.
+    try:
+        existing = db.latest_profile(s.id)
+        edu_text = (
+            analysis.degree.label
+            if getattr(analysis, "degree", None)
+            else (existing.education if existing else "Not stated")
+        )
+        all_skills = list(
+            dict.fromkeys(
+                [*analysis.matched_skills, *(existing.skills if existing else [])]
+            )
+        )
+        synced_profile = StudentProfile(
+            name=s.name,
+            education=edu_text or "Not stated",
+            skills=all_skills,
+            projects=list(existing.projects) if existing else [],
+            internships=list(existing.internships) if existing else [],
+            matched_skills=list(analysis.matched_skills),
+            resume_feedback=(
+                list(existing.resume_feedback)
+                if existing and existing.resume_feedback
+                else [
+                    f"Focus on missing skills: {', '.join(analysis.missing_gap_skills[:4])}."
+                    if analysis.missing_gap_skills
+                    else "Strong skill coverage for your target role."
+                ]
+            ),
+            target_role=role,
+            missing_skills=list(analysis.missing_gap_skills),
+            readiness_score=max(0, min(100, round(analysis.match_percentage))),
+        )
+        db.save_profile(s.id, synced_profile)
+    except Exception:
+        log.exception("local sync: could not update profile after scan for %s", s.username)
     try:
         sid = _telemetry_id(s)
         crud.save_resume_analysis(
@@ -459,6 +497,63 @@ def _upgrade(s: Student, telemetry_id: int, r: Roadmap) -> Roadmap:
     return Roadmap(r.week, ready)
 
 
+def _map_skill_to_topic(role: str, skill: str) -> str:
+    """Resolve a skill/focus item to a valid syllabus topic for WeeklyPlan / quiz_attempts."""
+    domain = syllabus.domain_of_role(role)
+    valid_topics = list(domain.topics)
+    if skill in valid_topics:
+        return skill
+    lower_skill = skill.strip().lower()
+    for t in valid_topics:
+        if t.lower() == lower_skill or lower_skill in t.lower() or t.lower() in lower_skill:
+            return t
+    # Check role_skills mapping or fall back to first focus topic / domain topic
+    focus = syllabus.focus_topics(role)
+    return focus[0] if focus else valid_topics[0]
+
+
+def _sync_roadmap_to_weekly_plan(s: Student, week: int, roadmap: SevenDayRoadmap) -> None:
+    """Mirror a SevenDayRoadmap into piq/db.py's plans table so Weekly Plan, Home & Dashboard
+    reflect the 7-day study roadmap immediately."""
+    try:
+        days: list[DayPlan] = []
+        for idx, d in enumerate(roadmap.days[:7], 1):
+            topic = _map_skill_to_topic(s.target_role, d.focus_skill)
+            subs = [o.strip()[:80] for o in d.learning_objectives if o.strip()][:3]
+            if len(subs) < 2:
+                subs = [*subs, f"Core concepts of {d.focus_skill}"][:2]
+            mins = max(30, min(240, round((d.estimated_hours or 1.5) * 60)))
+            goal = "; ".join(d.micro_tasks[:2]) if d.micro_tasks else f"Practise {d.focus_skill}"
+            days.append(
+                DayPlan(
+                    day=getattr(d, "day", idx) or idx,
+                    topic=topic,
+                    subtopics=subs,
+                    duration_min=mins,
+                    practice_goal=goal[:200],
+                )
+            )
+        while len(days) < 7:
+            fallback_topic = _map_skill_to_topic(s.target_role, "")
+            days.append(
+                DayPlan(
+                    day=len(days) + 1,
+                    topic=fallback_topic,
+                    subtopics=[f"Review {fallback_topic}", "Timed practice set"],
+                    duration_min=60,
+                    practice_goal=f"Consolidate {fallback_topic}",
+                )
+            )
+        wp = WeeklyPlan(
+            week_no=week,
+            rationale=roadmap.summary or f"7-day roadmap targeting {', '.join(roadmap.addressed_gaps[:4])}",
+            days=days,
+        )
+        db.save_plan(s.id, wp)
+    except Exception:
+        log.exception("sync: could not mirror 7-day roadmap week %s to weekly plan", week)
+
+
 def build_roadmap(student_id: str, gaps: list[str]) -> tuple[Roadmap, bool]:
     """A new 7-day roadmap for the gaps, saved as the next week: the preloaded one when it is
     ready, the curated one when it is still being written, else written now."""
@@ -472,7 +567,9 @@ def build_roadmap(student_id: str, gaps: list[str]) -> tuple[Roadmap, bool]:
         on_miss=lambda: preloader.make_roadmap(s.id, s.target_role, s.stream, gaps),
     )
     weeks = [r.week for r in roadmaps(student_id)]
-    week = max(weeks, default=0) + 1
+    local_weeks = [p.week_no for p in db.list_plans(student_id)]
+    week = max([*weeks, *local_weeks], default=0) + 1
+    _sync_roadmap_to_weekly_plan(s, week, plan)
     try:
         crud.save_study_plan(_telemetry_id(s), week, plan.model_dump())
         saved = True
@@ -483,7 +580,7 @@ def build_roadmap(student_id: str, gaps: list[str]) -> tuple[Roadmap, bool]:
 
 
 def set_tasks_done(student_id: str, week: int, done: set[str]) -> bool:
-    """Replace the week's completed tasks with `done`."""
+    """Replace the week's completed tasks with `done` and sync day completion to plan_progress."""
     s = student(student_id)
     try:
         t = crud.get_student(s.username)
@@ -493,6 +590,17 @@ def set_tasks_done(student_id: str, week: int, done: set[str]) -> bool:
         if plan is None:
             return False
         crud.save_study_plan(t.id, week, plan.plan_data, sorted(done))
+        # Sync day-level completion into piq/db.py plan_progress so Home & Dashboard update too.
+        try:
+            rm = SevenDayRoadmap.model_validate(plan.plan_data)
+            done_days = {
+                day.day
+                for day in rm.days
+                if any(task_key(day.day, idx) in done for idx in range(len(day.micro_tasks)))
+            }
+            db.set_days_done(student_id, week, done_days)
+        except Exception:
+            pass
         return True
     except Exception:
         log.exception("telemetry: could not save progress for %s", s.username)
@@ -550,6 +658,23 @@ def grade_quiz(
         f"Source: {batch.source.replace('_', ' ')}, attempts: {batch.attempts}. "
         + " ".join(batch.critic_notes)
     )
+    try:
+        topic = _map_skill_to_topic(s.target_role, batch.topic_or_skill)
+        qs = [
+            Question(
+                text=q.text if len(q.text) >= 10 else q.text.ljust(10),
+                options=list(q.options)[:4],
+                correct_index=q.correct_index,
+                explanation=q.explanation or "Verified answer.",
+                bloom_level="understand",
+            )
+            for q in batch.questions
+        ]
+        db.save_quiz_attempt(
+            s.id, QuizSet(topic=topic, difficulty=batch.difficulty, questions=qs), list(answers)
+        )
+    except Exception:
+        log.exception("local sync: could not mirror critic quiz for %s", s.username)
     try:
         crud.save_quiz_attempt(
             _telemetry_id(s), s.stream, s.domain, score, total, notes, proctor_flags=proctor_flags
@@ -633,6 +758,7 @@ def assess_answer(
     question: VoiceInterviewQuestion,
     answer: str,
     proctor_flags: Sequence[str] = (),
+    session_id: str | None = None,
 ) -> VoiceResult:
     s = student(student_id)
     answer = answer.strip()
@@ -650,6 +776,26 @@ def assess_answer(
         + [f"Improve: {x}" for x in result.areas_for_improvement]
     )
     all_flags = list(dict.fromkeys([*result.gap_flags.flag_details, *proctor_flags]))
+    try:
+        ev = AnswerEvaluation(
+            relevance=r.content_knowledge,
+            depth=r.content_knowledge,
+            structure=r.verbal_clarity_star,
+            clarity=r.confidence_demeanor,
+            strengths=list(result.strengths),
+            improvements=list(result.areas_for_improvement),
+            model_answer=result.exemplary_model_answer,
+        )
+        db.save_turn(
+            s.id,
+            session_id or uuid.uuid4().hex,
+            f"Voice ({question.category})",
+            question.question_text,
+            answer,
+            ev,
+        )
+    except Exception:
+        log.exception("local sync: could not mirror voice turn for %s", s.username)
     try:
         crud.save_voice_session(
             _telemetry_id(s),
