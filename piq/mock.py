@@ -143,10 +143,34 @@ def _interviewer(ctx: dict) -> dict:
                     "is_followup": True,
                     "is_final": final,
                 }
-    bank = _INTERVIEW_BANK.get(ctx["interview_type"]) or [
-        t.format(track=ctx["interview_type"], focus=ctx.get("focus") or "this area")
-        for t in _TRACK_TEMPLATES
-    ]
+    if ctx.get("focus") and ctx["interview_type"] not in _INTERVIEW_BANK:
+        bank = [
+            t.format(track=ctx["interview_type"], focus=ctx["focus"])
+            for t in _TRACK_TEMPLATES
+        ]
+    else:
+        bank = _INTERVIEW_BANK.get(ctx["interview_type"])
+        if bank and ctx["interview_type"] == "Technical":
+            brief = ctx.get("brief", "")
+            role_m = re.search(r"target role:\s*([^;\n]+)", brief, re.I)
+            role_name = role_m.group(1).strip() if role_m else ""
+            try:
+                from piq import syllabus
+
+                dom = syllabus.domain_of_role(role_name)
+                if dom.id != "cs":
+                    topics = ", ".join(dom.topics[:4])
+                    bank = [
+                        f"As a {role_name}, how do you apply core principles of {t} in practice?"
+                        for t in dom.topics[:5]
+                    ] + [f"Walk me through a real {dom.name} problem involving {topics}."]
+            except Exception:
+                pass
+        if not bank:
+            bank = [
+                t.format(track=ctx["interview_type"], focus=ctx.get("focus") or "this area")
+                for t in _TRACK_TEMPLATES
+            ]
     q = next((q for q in bank if text_hash(q) not in asked), f"{bank[0]} (round {len(asked)})")
     return {"question": q, "intent": "new area", "is_followup": bool(history), "is_final": final}
 

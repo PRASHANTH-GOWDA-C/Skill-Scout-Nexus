@@ -121,10 +121,28 @@ def _export(plan: services.WeeklyPlan) -> None:
             )
 
 
+def _books_map(role: str, topics: list[str], weakness: dict[str, float]) -> dict[str, list[dict]]:
+    """Preloaded fast topic -> recommended books mapping for the student's domain & role."""
+    from piq import syllabus
+
+    domain_id = syllabus.domain_of_role(role).id
+    weak = sorted(t for t, w in weakness.items() if w > WEAK_THRESHOLD)
+    ranked_books = [b for b, _ in study_library.books_for_student(role, weak)]
+    out: dict[str, list[dict]] = {}
+    for topic in dict.fromkeys(topics):
+        exact = [b for b in ranked_books if topic in b["topics"]]
+        if not exact:
+            exact = study_library.books_for(domain_id, topic)
+        if not exact:
+            exact = ranked_books[:1]
+        out[topic] = exact[:2]
+    return out
+
+
 # Choosing a week, ticking days, the table view and the export inputs rerun only this
 # section, not the page (no queries, no header, no sidebar).
 @st.fragment
-def _plans(sid: str, ov: services.PlanOverview) -> None:
+def _plans(sid: str, ov: services.PlanOverview, role: str) -> None:
     plan_col, side_col = st.columns([2, 1], gap="medium")
     previous = None
     with plan_col:
@@ -135,6 +153,13 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
                 "Generate week 1 with the button above. The planner turns your weakness scores "
                 "into seven days of practice, most of it on your weakest topics.",
             )
+            weak = sorted(t for t, w in ov.weakness.items() if w > WEAK_THRESHOLD)
+            starter_books = study_library.books_for_student(role, weak)[:4]
+            if starter_books:
+                with st.container(border=True):
+                    st.subheader("📚 Recommended Books to Start With", anchor=False)
+                    for book, fills in starter_books:
+                        st.markdown(formatter.book_md(book, fills))
         else:
             weeks = [p.week_no for p in ov.plans]
             week = st.pills(  # chips wrap onto more rows on a phone, however many weeks
@@ -148,6 +173,7 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
             )
             shown = next(p for p in ov.plans if p.week_no == week)
             previous = next((p for p in ov.plans if p.week_no == shown.week_no - 1), None)
+            books_by_topic = _books_map(role, [d.topic for d in shown.days], ov.weakness)
             with st.container(border=True):
                 w_top1, w_top2 = st.columns([3, 2], vertical_alignment="center")
                 with w_top1:
@@ -156,7 +182,11 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
                 with w_top2:
                     st.download_button(
                         "📥 Download 7-Day Schedule (.ics)",
-                        data=partial(calendar_export.generate_plan_ics, shown),  # on click
+                        data=partial(
+                            calendar_export.generate_plan_ics,
+                            shown,
+                            books_by_topic=books_by_topic,
+                        ),  # on click
                         file_name=f"study-schedule-week-{shown.week_no}.ics",
                         mime="text/calendar",
                         type="primary",
@@ -171,16 +201,26 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
                 done = _days_done(sid, shown.week_no, ov.done.get(shown.week_no, set()))
                 ov.done[shown.week_no] = done  # a fragment rerun keeps its first arguments
 
-                st.markdown("##### 📅 Daily Tasks & Schedule")
+                st.markdown("##### 📅 Daily Tasks, Goals & Books to Read")
                 for d in sorted(shown.days, key=lambda x: x.day):
                     day_is_done = d.day in done
                     badge_icon = "✅" if day_is_done else "📖"
+                    topic_books = books_by_topic.get(d.topic, [])
+                    top_book = topic_books[0] if topic_books else None
+                    book_line = ""
+                    if top_book:
+                        lnk = study_library.best_link(top_book)
+                        book_line = (
+                            f"  \n📚 *Read:* [{formatter.md_escape(top_book['title'])}]({lnk['url']}) "
+                            f"— {formatter.md_escape(top_book['author'])} ({top_book['level']})"
+                        )
                     task_title = f"[Skill Scout Nexus] Day {d.day}: {d.topic}"
                     task_desc = (
                         f"Day {d.day} Study Plan - Week {shown.week_no}\n"
                         f"Topic: {d.topic} ({d.duration_min} min)\n"
                         f"Practice Goal: {d.practice_goal}\n"
                         f"Subtopics: {', '.join(d.subtopics)}"
+                        + (f"\nRecommended Book: {top_book['title']} ({top_book['author']})" if top_book else "")
                     )
                     gcal_url = calendar_export.build_gcal_url(
                         title=task_title,
@@ -196,7 +236,7 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
                                 f"**{badge_icon} Day {d.day}: {d.topic}** "
                                 f"({d.duration_min} min){status_tag}  \n"
                                 f":gray[Subtopics: {formatter.md_escape(sub_text)}]  \n"
-                                f"🎯 *Goal: {formatter.md_escape(d.practice_goal)}*"
+                                f"🎯 *Goal: {formatter.md_escape(d.practice_goal)}*{book_line}"
                             )
                         with d_col2:
                             st.link_button(
@@ -206,13 +246,31 @@ def _plans(sid: str, ov: services.PlanOverview) -> None:
                                 key=f"gcal_btn_w{shown.week_no}_d{d.day}",
                             )
 
+                # Dedicated weekly reading list for this week's topics
+                seen_titles: set[str] = set()
+                week_books: list[tuple[dict, list[str]]] = []
+                weak_set = {t for t, w in ov.weakness.items() if w > WEAK_THRESHOLD}
+                for d in sorted(shown.days, key=lambda x: x.day):
+                    for b in books_by_topic.get(d.topic, []):
+                        if b["title"] not in seen_titles:
+                            seen_titles.add(b["title"])
+                            week_books.append((b, [t for t in b["topics"] if t in weak_set]))
+                if week_books:
+                    with st.container(border=True):
+                        st.subheader(f"📚 Books to Read for Week {shown.week_no}", anchor=False)
+                        st.caption("Curated textbooks & references mapped to this week's topics.")
+                        for b, fills in week_books[:6]:
+                            st.markdown(formatter.book_md(b, fills))
+
                 with st.container(border=True):
                     st.subheader("📝 Export to Google Keep / Tasks", anchor=False)
                     st.caption(
                         "Copy your 7-day checklist formatted with task boxes `[ ]` "
                         "ready to paste directly into Google Keep, Apple Notes, Notion, or Tasks."
                     )
-                    checklist_md = calendar_export.format_tasks_checklist(shown, done_days=done)
+                    checklist_md = calendar_export.format_tasks_checklist(
+                        shown, done_days=done, books_by_topic=books_by_topic
+                    )
                     st.code(checklist_md, language="markdown")
                     st.html(
                         calendar_export.copy_clipboard_button_html(
@@ -311,7 +369,7 @@ with tab_weekly:
                 st.warning("No email address on file for this account.", icon=":material/warning:")
 
     show_last_run("Planner agent")
-    _plans(sid, ov)
+    _plans(sid, ov, profile.target_role)
 
 with tab_roadmap:
     from piq import journey as _j
@@ -391,6 +449,16 @@ with tab_roadmap:
                 ]
                 if links:
                     st.markdown(":material/menu_book: " + " · ".join(links))
+                rm_books = study_library.books_for_student(me.target_role, [], query=day.focus_skill.split(":")[0])[:1]
+                if not rm_books:
+                    rm_books = study_library.books_for_student(me.target_role, [])[:1]
+                if rm_books:
+                    b = rm_books[0][0]
+                    lnk = study_library.best_link(b)
+                    st.markdown(
+                        f"📚 *Recommended Book:* [{formatter.md_escape(b['title'])}]({lnk['url']}) "
+                        f"— {formatter.md_escape(b['author'])} ({b['level']})"
+                    )
                 for n, task in enumerate(day.micro_tasks):
                     tkey = _j.task_key(day.day, n)
                     if st.checkbox(

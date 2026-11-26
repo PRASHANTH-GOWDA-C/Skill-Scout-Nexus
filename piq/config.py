@@ -109,7 +109,7 @@ AI_CACHE_TTL_S = 7 * 24 * 3600
 # Speech model IDs (GEMINI_TTS_MODEL, GEMINI_TTS_FALLBACK_MODEL, LOCAL_STT_MODEL) come only
 # from .env, like every model ID: blank turns that tier off.
 GEMINI_TTS_VOICE = "Kore"  # one of Gemini's prebuilt voices (GEMINI_TTS_VOICE overrides)
-GEMINI_TTS_TIMEOUT_S = 12.0  # speech takes longer to generate than text
+GEMINI_TTS_TIMEOUT_S = 4.5  # snappy timeout so voice interview turns stay responsive
 NET_PROBE_TTL_S = 15.0  # an online/offline verdict (core/connectivity.py) is reused this long
 TTS_MAX_CHARS = 2500  # text sent for synthesis; longer text is cut at the last full sentence
 # --- the six-step journey and the faculty dashboard (piq/journey.py, piq/cohort.py) ----------
@@ -120,7 +120,7 @@ ROADMAP_DEFAULT_SKILLS = 7  # gaps the roadmap page preselects: seven days, one 
 VOICE_DEFAULT_CATEGORY = "situational"  # the voice page's preselected question type
 # Speculative preloading (core/preloader.py): the next steps' content is written in the
 # background while the student reads the current one.
-PRELOAD_WORKERS = 4
+PRELOAD_WORKERS = 6
 PRELOAD_WAIT_S = 1.5  # a page waits this long for a preload still running, then falls back
 PRELOAD_TTL_S = 24 * 3600  # an unused preload is dropped after this
 PRELOAD_QUIZ_SKILLS = 1  # skills quizzed ahead of time: the top gap, the page's default

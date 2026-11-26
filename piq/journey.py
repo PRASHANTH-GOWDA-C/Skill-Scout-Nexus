@@ -16,6 +16,8 @@ finds nothing preloaded generates as before.
 """
 
 import logging
+import threading
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -705,30 +707,47 @@ def voice_question(
     stream: str,
     category: Category | None,
     custom_question: str | None = None,
+    exclude_questions: Sequence[str] = (),
 ) -> VoiceQuestion:
     s = student(student_id)
     if category is not None and category not in CATEGORIES:
         raise ServiceError(f"Question type must be one of {', '.join(CATEGORIES)}.")
 
-    if custom_question:
-        from agents.voice_interview_agent import generate_voice_interview_question
+    from agents.voice_interview_agent import generate_voice_interview_question
 
+    domain_id = syllabus.domain_of_role(s.target_role).id
+
+    if custom_question:
         q = generate_voice_interview_question(
             s.target_role,
             stream=stream,
             category=category or "technical",
             include_audio=False,
             custom_question=custom_question,
+            domain_id=domain_id,
         )
         speech = speech_router.synthesize(q.question_text)
         return VoiceQuestion(q, speech)
 
+    excluded = {" ".join(x.lower().split()) for x in exclude_questions if x}
     p = preloader.get_preloader()
 
     def ask() -> VoiceInterviewQuestion:  # a bank pick: instant, so it is also the fallback
-        return preloader.make_voice_question(s.target_role, stream, category)
+        return generate_voice_interview_question(
+            s.target_role,
+            stream=stream,
+            category=category,
+            include_audio=False,
+            domain_id=domain_id,
+            exclude_questions=exclude_questions,
+        )
 
-    q = p.get_or_wait(preloader.voice_key(s.id, s.target_role, stream, category), ask)
+    if excluded:
+        q = ask()
+    else:
+        q = p.get_or_wait(preloader.voice_key(s.id, s.target_role, stream, category), ask)
+        if " ".join(q.question_text.lower().split()) in excluded:
+            q = ask()
     # Audio still being synthesised: the browser voice now, never a second paid request.
     speech = p.get_or_wait(
         preloader.audio_key(q.question_text),
@@ -885,10 +904,26 @@ def _db_engine() -> str:
     return f"local WAL + {cloud} sync{waiting}"
 
 
+_ENGINE_CACHE_TTL_S = 8.0
+_engine_cache_lock = threading.Lock()
+_engine_cache: tuple[float, tuple, EngineStatus] | None = None
+
+
 def engine_status() -> EngineStatus:
-    """The sidebar footer, from one router check per run: who answers (and over how many
-    keys), where records go, and the preloader. Keys are counted, never shown or asked for."""
-    if settings().mock_mode:
+    """The sidebar footer, from one cached router check (TTL 8s): keeps rapid exam/quiz clicks fast."""
+    global _engine_cache
+    cfg = settings()
+    cache_sig = (cfg.mock_mode, cfg.ai_providers, cfg.database_url, cfg.ollama_base_url)
+    now = time.monotonic()
+    with _engine_cache_lock:
+        if (
+            _engine_cache is not None
+            and now - _engine_cache[0] < _ENGINE_CACHE_TTL_S
+            and _engine_cache[1] == cache_sig
+        ):
+            return _engine_cache[2]
+
+    if cfg.mock_mode:
         active, ai = "Mock mode", "mock mode"
     else:
         ready = next((p for p in ai_router.status() if p.state == "ready"), None)
@@ -897,7 +932,10 @@ def engine_status() -> EngineStatus:
         else:
             active = ready.label
             ai = f"{ready.label} LB ({ready.keys} keys)" if ready.keys > 1 else ready.label
-    return EngineStatus(active, ai, _db_engine(), preloader.get_preloader().status().label)
+    status = EngineStatus(active, ai, _db_engine(), preloader.get_preloader().status().label)
+    with _engine_cache_lock:
+        _engine_cache = (time.monotonic(), cache_sig, status)
+    return status
 
 
 def service_status() -> ServiceStatus:

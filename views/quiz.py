@@ -160,7 +160,7 @@ def _take(sid: str, run: services.QuizRun) -> None:
                     critique_notes=(
                         "[TEST TERMINATED: Force-submitted due to 3 strikes / PROCTOR_BREACH]"
                     ),
-                    proctor_flags=[proctor_guard.FLAG_PROCTOR_BREACH],
+                    proctor_flags=proctor_guard.get_proctor_flags() or [proctor_guard.FLAG_PROCTOR_BREACH],
                 )
         except Exception:
             pass
@@ -372,7 +372,10 @@ def _quick_critic_quiz_tab(sid: str) -> None:
         if proctor_guard.is_breached():
             answers = [st.session_state.get(f"cq{n}_{i}") for i in range(len(batch.questions))]
             st.session_state[GRADE] = journey.grade_quiz(
-                sid, batch, answers, proctor_flags=[proctor_guard.FLAG_PROCTOR_BREACH]
+                sid,
+                batch,
+                answers,
+                proctor_flags=proctor_guard.get_proctor_flags() or [proctor_guard.FLAG_PROCTOR_BREACH],
             )
             st.session_state["assessment_active"] = False
             st.rerun()

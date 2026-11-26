@@ -7,7 +7,7 @@ Method C: Markdown/plain-text checklist formatting for Google Keep, Apple Notes,
 import json
 import re
 import urllib.parse
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 
 
@@ -74,6 +74,7 @@ def generate_plan_ics(
     start_date: date | None = None,
     now: datetime | None = None,
     study_hour_local: int = 19,
+    books_by_topic: Mapping[str, list[dict]] | None = None,
 ) -> bytes:
     """Generate a universal RFC-5545 compliant .ics file compatible with iOS Apple Calendar,
     Android Google Calendar, Desktop Outlook/macOS Calendar, and Webmail.
@@ -116,12 +117,18 @@ def generate_plan_ics(
         dt_end = dt_start + timedelta(minutes=dur)
 
         summary = f"Study Day {day_num}: {topic} ({dur} min)"
+        topic_books = (books_by_topic or {}).get(topic, [])
+        book_line = (
+            f"\nRecommended Book: {topic_books[0]['title']} ({topic_books[0]['author']})"
+            if topic_books
+            else ""
+        )
         description = (
             f"Skill Scout Nexus - Week {week_no}, Day {day_num}\n"
             f"Topic: {topic}\n"
             f"Study Goal: {goal}\n"
             f"Key Subtopics: {sub_str}\n"
-            f"Duration: {dur} minutes"
+            f"Duration: {dur} minutes{book_line}"
         )
 
         lines.extend(
@@ -154,6 +161,7 @@ def format_tasks_checklist(
     plan: object,
     week_no: int | None = None,
     done_days: Collection[int] | None = None,
+    books_by_topic: Mapping[str, list[dict]] | None = None,
 ) -> str:
     """Format the 7-day study plan as a Markdown checklist ready for Google Keep/Tasks."""
     w_no = week_no or getattr(plan, "week_no", 1)
@@ -178,6 +186,9 @@ def format_tasks_checklist(
         lines.append(f"{box} Day {day_num}: {topic} ({dur} min)")
         if goal:
             lines.append(f"    - Goal: {goal}")
+        topic_books = (books_by_topic or {}).get(topic, [])
+        if topic_books:
+            lines.append(f"    - Read: {topic_books[0]['title']} — {topic_books[0]['author']}")
         if subtopics and isinstance(subtopics, list):
             for sub in subtopics:
                 lines.append(f"    - [ ] Practice: {sub}")

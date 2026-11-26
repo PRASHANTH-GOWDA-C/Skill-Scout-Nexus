@@ -63,7 +63,7 @@ ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice}"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 ELEVENLABS_TIMEOUT_S = 2.5
-PYTTSX3_TIMEOUT_S = 3.0
+PYTTSX3_TIMEOUT_S = 2.0
 
 GEMINI_EXT = ".gemini.wav"  # Gemini clips are cached apart from pyttsx3's plain .wav
 

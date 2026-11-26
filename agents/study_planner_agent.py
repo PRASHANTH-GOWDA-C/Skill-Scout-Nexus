@@ -188,6 +188,145 @@ CURATED_RESOURCES: dict[str, list[dict[str, str]]] = {
             "type": "Practice",
         },
     ],
+    # Commerce, Accounting & Tax
+    "Accounting": [
+        {
+            "title": "ICAI Study Material Portal",
+            "url": "https://www.icai.org/post/bos-knowledge-portal",
+            "type": "Documentation",
+        },
+        {
+            "title": "AccountingCoach Free Lessons",
+            "url": "https://www.accountingcoach.com/",
+            "type": "Course",
+        },
+    ],
+    "Taxation": [
+        {
+            "title": "Income Tax India Official Tutorials",
+            "url": "https://www.incometax.gov.in/iec/foportal/",
+            "type": "Documentation",
+        },
+        {
+            "title": "GST Council Official Portal & FAQs",
+            "url": "https://gstcouncil.gov.in/",
+            "type": "Documentation",
+        },
+    ],
+    "Audit": [
+        {
+            "title": "ICAI Standards on Auditing",
+            "url": "https://www.icai.org/post/auditing-assurance-standards-board",
+            "type": "Documentation",
+        },
+    ],
+    "Finance": [
+        {
+            "title": "Corporate Finance Institute (CFI) Free Resources",
+            "url": "https://corporatefinanceinstitute.com/resources/",
+            "type": "Guide",
+        },
+    ],
+    # Law & Legal Services
+    "Law": [
+        {
+            "title": "India Code (Official Central & State Acts)",
+            "url": "https://www.indiacode.nic.in/",
+            "type": "Documentation",
+        },
+        {
+            "title": "Indian Kanoon Case Law Search",
+            "url": "https://indiankanoon.org/",
+            "type": "Reference",
+        },
+    ],
+    "Contract": [
+        {
+            "title": "Indian Contract Act Official Text (India Code)",
+            "url": "https://www.indiacode.nic.in/",
+            "type": "Documentation",
+        },
+    ],
+    # Healthcare & Biotech
+    "Pharmacology": [
+        {
+            "title": "WHO Model List & Clinical Guidelines",
+            "url": "https://www.who.int/publications/guidelines",
+            "type": "Reference",
+        },
+    ],
+    "Epidemiology": [
+        {
+            "title": "CDC Principles of Epidemiology (Free Textbook)",
+            "url": "https://archive.cdc.gov/www_cdc_gov/csels/dsepd/ss1978/index.html",
+            "type": "Book",
+        },
+    ],
+    "Molecular Biology": [
+        {
+            "title": "NCBI Bookshelf: Molecular Biology of the Cell",
+            "url": "https://www.ncbi.nlm.nih.gov/books/NBK21054/",
+            "type": "Book",
+        },
+    ],
+    # Core Engineering (ECE / EEE / Mech / Civil)
+    "Embedded": [
+        {
+            "title": "STM32 & ARM Cortex-M Developer Docs",
+            "url": "https://developer.arm.com/documentation",
+            "type": "Documentation",
+        },
+    ],
+    "VLSI": [
+        {
+            "title": "HDLBits Verilog Practice",
+            "url": "https://hdlbits.01xz.net/wiki/Main_Page",
+            "type": "Interactive",
+        },
+    ],
+    "Power": [
+        {
+            "title": "NPTEL Electrical Engineering Lectures",
+            "url": "https://nptel.ac.in/course.html",
+            "type": "Course",
+        },
+    ],
+    "Thermodynamics": [
+        {
+            "title": "MIT OpenCourseWare Mechanical Engineering",
+            "url": "https://ocw.mit.edu/courses/mechanical-engineering/",
+            "type": "Course",
+        },
+    ],
+    "Structural": [
+        {
+            "title": "NPTEL Civil Engineering Design Courses",
+            "url": "https://nptel.ac.in/course.html",
+            "type": "Course",
+        },
+    ],
+    # Management & Government
+    "Marketing": [
+        {
+            "title": "HubSpot Academy Free Marketing Guides",
+            "url": "https://academy.hubspot.com/",
+            "type": "Course",
+        },
+    ],
+    "Polity": [
+        {
+            "title": "Constitution of India (Official Legislative Portal)",
+            "url": "https://legislative.gov.in/constitution-of-india/",
+            "type": "Documentation",
+        },
+    ],
+    "Economy": [
+        {
+            "title": "PIB & Union Budget Official Highlights",
+            "url": "https://www.indiabudget.gov.in/",
+            "type": "Reference",
+        },
+    ],
 }
 
 

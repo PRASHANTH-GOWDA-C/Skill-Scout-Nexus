@@ -102,7 +102,19 @@ def _load_bank_fallback_questions(
         return _make_synthetic_sample(skill_gap, difficulty, count)
 
     matched_rows: list[dict[str, str]] = []
+    domain_rows: list[dict[str, str]] = []
     broad_rows: list[dict[str, str]] = []
+
+    target_domain_id = ""
+    target_stream = ""
+    try:
+        from piq import syllabus
+
+        dom = syllabus.domain_of_role(target_role)
+        target_domain_id = dom.id.lower()
+        target_stream = syllabus.stream_of(dom.id).lower()
+    except Exception:
+        pass
 
     try:
         with open(MCQ_BANK_PATH, encoding="utf-8", errors="replace") as f:
@@ -111,6 +123,8 @@ def _load_bank_fallback_questions(
                 q_text = row.get("question", "")
                 r_topic = row.get("topic", "")
                 r_role = row.get("role", "")
+                r_domain = (row.get("domain") or "").strip().lower()
+                r_stream = (row.get("stream") or "").strip().lower()
                 r_diff = (row.get("difficulty") or "medium").lower()
 
                 # High relevance match: topic or skill mentioned in topic or question
@@ -122,13 +136,24 @@ def _load_bank_fallback_questions(
                     if r_diff == difficulty.lower():
                         matched_rows.append(row)
                     else:
-                        broad_rows.append(row)
+                        domain_rows.append(row)
+                elif target_domain_id and (
+                    r_domain == target_domain_id
+                    or (target_stream and r_stream == target_stream)
+                ):
+                    domain_rows.append(row)
                 elif r_diff == difficulty.lower():
                     broad_rows.append(row)
     except Exception as e:
         log.warning("Could not read mcq_bank.csv: %s", e)
 
-    selected = matched_rows if len(matched_rows) >= count else (matched_rows + broad_rows)
+    selected = (
+        matched_rows
+        if len(matched_rows) >= count
+        else (matched_rows + domain_rows)
+        if len(matched_rows) + len(domain_rows) >= count
+        else (matched_rows + domain_rows + broad_rows)
+    )
     if not selected:
         return _make_synthetic_sample(skill_gap, difficulty, count)
 
@@ -159,23 +184,22 @@ def _load_bank_fallback_questions(
 
 
 def _make_synthetic_sample(skill: str, difficulty: str, count: int) -> list[GeneratedMCQ]:
-    """Generates clean verified default MCQs for core topics when bank is sparse."""
+    """Generates clean domain-neutral default MCQs when the bank has no matching items."""
     items = [
         GeneratedMCQ(
             text=(
-                f"Which of the following statements best characterizes core best practices in "
-                f"{skill}?"
+                f"Which approach best reflects professional standards and accuracy when applying "
+                f"{skill} in practice?"
             ),
             options=[
-                f"Prioritizing modularity, loose coupling, and defensive validation in {skill}",
-                "Relying entirely on runtime exception ignoring without systematic logs",
-                "Hardcoding dynamic configurations directly inside compilation units",
-                "Bypassing deterministic testing phases to optimize deployment throughput",
+                f"Applying structured validation, clear documentation, and domain principles in {skill}",
+                "Skipping verification steps and ignoring documented boundary conditions",
+                "Relying solely on unverified assumptions without cross-checking source data",
+                "Avoiding peer or supervisory review on critical deliverables",
             ],
             correct_index=0,
             explanation=(
-                f"Modularity and defensive programming are universal industry standards when "
-                f"engineering solutions in {skill}."
+                f"Structured validation and documentation are essential professional standards in {skill}."
             ),
             bloom_level="understand",
             difficulty=difficulty,
@@ -183,19 +207,18 @@ def _make_synthetic_sample(skill: str, difficulty: str, count: int) -> list[Gene
         ),
         GeneratedMCQ(
             text=(
-                f"In the context of production-grade systems using {skill}, what is the primary "
-                f"consequence of unhandled concurrency?"
+                f"When troubleshooting an unexpected discrepancy or failure in {skill}, what is the "
+                "most reliable first diagnostic step?"
             ),
             options=[
-                "Automatic compiler optimization of critical sections",
-                "Race conditions, data inconsistencies, and potential deadlocks",
-                "Guaranteed reduction in cache miss latencies",
-                "Deterministic memory deallocation across distributed nodes",
+                "Change multiple unrelated parameters simultaneously without logging",
+                "Isolate variables systematically and compare observed outcomes against baseline criteria",
+                "Discard historical records and restart without root-cause analysis",
+                "Assume the discrepancy is transient and promote directly to final sign-off",
             ],
             correct_index=1,
             explanation=(
-                "Uncoordinated multi-threaded or concurrent access leads to non-deterministic "
-                "race conditions and deadlocks."
+                "Systematic variable isolation against baseline criteria reliably identifies root causes."
             ),
             bloom_level="analyze",
             difficulty=difficulty,
@@ -203,19 +226,17 @@ def _make_synthetic_sample(skill: str, difficulty: str, count: int) -> list[Gene
         ),
         GeneratedMCQ(
             text=(
-                f"When profiling asymptotic performance in {skill}, what does O(1) time complexity "
-                f"indicate?"
+                f"Why are standardized metrics and auditability prioritized in real-world {skill} workflows?"
             ),
             options=[
-                "Linear growth proportional to input size",
-                "Logarithmic reduction across partitioned subsets",
-                "Constant time independent of input cardinality",
-                "Quadratic latency scaling for nested iterations",
+                "They eliminate the need for domain expertise completely",
+                "They slow down all reviews to prevent completion",
+                "They ensure reproducible quality, compliance, and objective evaluation",
+                "They replace all regulatory and quality checkpoints",
             ],
             correct_index=2,
             explanation=(
-                "O(1) signifies constant time complexity where the execution duration remains "
-                "invariant relative to input magnitude."
+                "Standardized metrics enable reproducibility, compliance, and objective decision-making."
             ),
             bloom_level="remember",
             difficulty=difficulty,
@@ -223,7 +244,7 @@ def _make_synthetic_sample(skill: str, difficulty: str, count: int) -> list[Gene
         ),
     ]
     while len(items) < count:
-        items.append(items[0].model_copy())
+        items.append(items[len(items) % 3].model_copy())
     return items[:count]
 
 

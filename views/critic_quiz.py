@@ -77,7 +77,10 @@ if grade is None:
     if proctor_guard.is_breached():
         answers = [st.session_state.get(f"cq{n}_{i}") for i in range(len(batch.questions))]
         st.session_state[GRADE] = grade = journey.grade_quiz(
-            sid, batch, answers, proctor_flags=[proctor_guard.FLAG_PROCTOR_BREACH]
+            sid,
+            batch,
+            answers,
+            proctor_flags=proctor_guard.get_proctor_flags() or [proctor_guard.FLAG_PROCTOR_BREACH],
         )
         st.session_state["assessment_active"] = False
         st.rerun()

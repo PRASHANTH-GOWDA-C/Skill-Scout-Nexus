@@ -107,6 +107,18 @@ def audio_key(text: str) -> str:
 # --- the agent calls a preload and a page request share ---------------------------------------
 
 
+def preload_study_assets() -> bool:
+    """Warm static syllabus, study library (books + repos), and MCQ bank indexes into memory."""
+    from piq import question_bank, study_library, syllabus
+
+    syllabus.domains()
+    syllabus.role_skills()
+    study_library.library()
+    study_library.role_index()
+    question_bank.size()
+    return True
+
+
 def make_roadmap(student_id: str, role: str, stream: str, gaps: Iterable[str]) -> SevenDayRoadmap:
     return generate_study_roadmap(clean_skills(gaps), role, stream, student_id=student_id)
 
@@ -331,6 +343,12 @@ class BackgroundPreloader:
         skills = list(dict.fromkeys(clean_skills([*missing, *matched])))  # B
         started += self.trigger_quiz_next_batch_preload(
             student_id, role, skills[:PRELOAD_QUIZ_SKILLS]
+        )
+        # Warm study library & question bank indexes in the background so Plan & Quiz render instantly
+        self.submit(
+            _key("study_assets", role),
+            lambda: preload_study_assets(),
+            keep=False,
         )
         for category in sorted(CATEGORIES, key=lambda c: c != VOICE_DEFAULT_CATEGORY):  # C
             started += self.preload_voice_question(

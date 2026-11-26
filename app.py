@@ -35,6 +35,13 @@ except ConfigError as e:
 def _startup() -> None:
     db.init_db()
     journey.start_sync()  # records made while offline go to the cloud copy, in the background
+    # Pre-warm static datasets (syllabus, study library books, MCQ bank) once at boot for instant UI responses
+    try:
+        from core import preloader
+
+        preloader.preload_study_assets()
+    except Exception:
+        pass
     logging.getLogger("piq").info(
         "mock_mode=%s large=%s small=%s db=%s",
         cfg.mock_mode,
