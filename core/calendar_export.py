@@ -73,10 +73,16 @@ def generate_plan_ics(
     plan: object,
     start_date: date | None = None,
     now: datetime | None = None,
+    study_hour_local: int = 19,
 ) -> bytes:
-    """Generate an RFC-5545 compliant .ics file containing all 7 days of tasks as all-day events."""
+    """Generate a universal RFC-5545 compliant .ics file compatible with iOS Apple Calendar,
+    Android Google Calendar, Desktop Outlook/macOS Calendar, and Webmail.
+
+    Each of the 7 days becomes a timed UTC calendar event (converted from local 19:00 IST,
+    13:30 UTC) with full study details and a 15-minute VALARM reminder.
+    """
     now_utc = now or datetime.now(UTC)
-    start = start_date or (date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7))
+    start = start_date or date.today()
 
     week_no = getattr(plan, "week_no", 1)
     days_data = getattr(plan, "days", [])
@@ -92,23 +98,26 @@ def generate_plan_ics(
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         f"X-WR-CALNAME:Skill Scout Nexus - Week {week_no} Plan",
+        "X-WR-CALDESC:7-Day Personalized Study Plan from Skill Scout Nexus",
         "X-WR-TIMEZONE:UTC",
     ]
 
     for d in sorted_days:
-        day_num = _get_day_attr(d, "day", 1)
+        day_num = int(_get_day_attr(d, "day", 1) or 1)
         topic = str(_get_day_attr(d, "topic", ""))
         goal = str(_get_day_attr(d, "practice_goal", ""))
-        dur = int(_get_day_attr(d, "duration_min", 60))  # type: ignore
+        dur = max(15, int(_get_day_attr(d, "duration_min", 60) or 60))
         subtopics = _get_day_attr(d, "subtopics", [])
         sub_str = ", ".join(subtopics) if isinstance(subtopics, list) else str(subtopics)
 
-        event_date = start + timedelta(days=day_num - 1)  # type: ignore
-        next_date = event_date + timedelta(days=1)
+        event_date = start + timedelta(days=day_num - 1)
+        # Convert 19:00 IST (UTC+05:30) -> 13:30 UTC so mobile & desktop calendars place it in the evening
+        dt_start = datetime(event_date.year, event_date.month, event_date.day, max(0, study_hour_local - 5), 0, tzinfo=UTC) - timedelta(minutes=30)
+        dt_end = dt_start + timedelta(minutes=dur)
 
-        summary = f"Day {day_num}: {topic} ({dur} min)"
+        summary = f"Study Day {day_num}: {topic} ({dur} min)"
         description = (
-            f"Placement Preparation - Week {week_no}, Day {day_num}\n"
+            f"Skill Scout Nexus - Week {week_no}, Day {day_num}\n"
             f"Topic: {topic}\n"
             f"Study Goal: {goal}\n"
             f"Key Subtopics: {sub_str}\n"
@@ -120,12 +129,19 @@ def generate_plan_ics(
                 "BEGIN:VEVENT",
                 f"UID:ssn-w{week_no}-d{day_num}-{event_date:%Y%m%d}@skillscoutnexus",
                 f"DTSTAMP:{now_utc:%Y%m%dT%H%M%SZ}",
-                f"DTSTART;VALUE=DATE:{event_date:%Y%m%d}",
-                f"DTEND;VALUE=DATE:{next_date:%Y%m%d}",
+                f"DTSTART:{dt_start:%Y%m%dT%H%M%SZ}",
+                f"DTEND:{dt_end:%Y%m%dT%H%M%SZ}",
                 f"SUMMARY:{_ics_escape(summary)}",
                 f"DESCRIPTION:{_ics_escape(description)}",
+                "LOCATION:Skill Scout Nexus",
                 "STATUS:CONFIRMED",
-                "TRANSP:TRANSPARENT",
+                "TRANSP:OPAQUE",
+                "SEQUENCE:0",
+                "BEGIN:VALARM",
+                "TRIGGER:-PT15M",
+                "ACTION:DISPLAY",
+                f"DESCRIPTION:{_ics_escape(summary)}",
+                "END:VALARM",
                 "END:VEVENT",
             ]
         )

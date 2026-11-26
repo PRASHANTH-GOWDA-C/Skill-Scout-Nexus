@@ -273,11 +273,15 @@ tab_weekly, tab_roadmap, tab_library = st.tabs(
 ov = services.plan_overview(sid, profile)
 
 with tab_weekly:
-    col_top_gen, col_top_ics = st.columns([1, 1], vertical_alignment="center")
+    col_top_gen, col_top_ics, col_top_email = st.columns([1, 1, 1], vertical_alignment="center")
     with col_top_gen:
         if st.button(
             f"Generate week {ov.next_week} plan", type="primary", icon=":material/autorenew:"
         ) and run_agent("Planner agent", lambda ev: services.generate_next_plan(sid, ev)):
+            st.toast(
+                f"Week {ov.next_week} plan generated and sent to your email with the .ics calendar file!",
+                icon=":material/mail:",
+            )
             st.rerun()
 
     with col_top_ics:
@@ -290,9 +294,21 @@ with tab_weekly:
                 mime="text/calendar",
                 type="primary",
                 icon=":material/event:",
-                help="Download RFC-5545 compliant 7-day schedule for Google Calendar, Outlook, Apple",
+                help="Universal RFC-5545 .ics calendar file for iOS, Android, Outlook, Mac, and Web",
                 key="plan_top_primary_ics",
             )
+    with col_top_email:
+        if ov.plans and st.button(
+            "📧 Email Plan + .ics",
+            icon=":material/forward_to_inbox:",
+            help="Send all 7 days and universal .ics calendar attachment to your email",
+            key="plan_resend_email_btn",
+        ):
+            ch = services.email_weekly_plan(sid, ov.plans[-1])
+            if ch:
+                st.toast("Study plan and .ics file sent to your email!", icon=":material/mark_email_read:")
+            else:
+                st.warning("No email address on file for this account.", icon=":material/warning:")
 
     show_last_run("Planner agent")
     _plans(sid, ov)

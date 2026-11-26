@@ -1,4 +1,4 @@
-"""Home & Dashboard: unified overview combining today's focus, readiness, study streak,
+"""Home & Dashboard: unified overview combining today's focus, study streak,
 analytics charts, quiz/interview/plan history, calendar export, and critic telemetry."""
 
 import streamlit as st
@@ -98,7 +98,7 @@ domain = services.domain_of_role(profile.target_role)
 ui.page_header(
     f"Hello, {formatter.md_escape(profile.name)}",
     f"Unified Home & Dashboard for {formatter.md_escape(profile.target_role)} "
-    f"({formatter.md_escape(domain.name)}): today's focus, readiness, analytics, and history.",
+    f"({formatter.md_escape(domain.name)}): today's focus, skill gaps, analytics, and history.",
 )
 
 if (snap := st.session_state.get("snapshot")) and (snap.roadmap_week or snap.quizzes):
@@ -113,12 +113,9 @@ except services.ServiceError:
     d = None
 
 if d is not None:
-    change = formatter.readiness_change([r["readiness_score"] for r in d.readiness])
-    delta, color = change or (None, "normal")
     correct, answered = d.answered
     stat_row(
         [
-            Stat("Readiness", f"{d.profile.readiness_score}/100", delta, delta_color=color),
             Stat("Quizzes taken", str(d.quizzes_taken)),
             Stat(
                 "Questions answered",
@@ -254,14 +251,6 @@ if d is not None:
             st.dataframe(formatter.runs_table(d.runs), hide_index=True, width="stretch")
 
     with col_right:
-        scores = [r["readiness_score"] for r in d.readiness]
-        st.subheader(formatter.readiness_headline(scores), anchor=False)
-        labels = [formatter.local_day(r["created_at"]) for r in d.readiness]
-        st.vega_lite_chart(
-            spec=charts.readiness_trend_spec(scores, labels),
-            width="stretch",
-            alt="Readiness by profile.",
-        )
         if not d.sessions:
             st.subheader("No interview yet", anchor=False)
             st.caption("Each session's average score appears here after your first mock interview.")

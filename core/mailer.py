@@ -73,11 +73,21 @@ _lock = threading.Lock()
 
 
 @dataclass(frozen=True)
+class Attachment:
+    filename: str
+    data: bytes
+    maintype: str
+    subtype: str
+    params: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
 class Message:
     to: str
     subject: str
     text: str
     html: str
+    attachments: tuple[Attachment, ...] = ()
 
 
 def configured() -> bool:
@@ -432,6 +442,109 @@ def nudge_message(
     return Message(to, subject, text, page)
 
 
+def weekly_plan_message(
+    to: str,
+    *,
+    name: str,
+    target_role: str,
+    plan: object,
+    ics_bytes: bytes,
+) -> Message:
+    """Detailed 7-day study plan email with universal .ics attachment (iOS, Android, Desktop, Web)."""
+    from datetime import date, timedelta
+
+    from core import calendar_export
+
+    week_no = getattr(plan, "week_no", 1)
+    rationale = str(getattr(plan, "rationale", ""))
+    days_data = sorted(getattr(plan, "days", []), key=lambda d: getattr(d, "day", 1))
+    start = date.today()
+
+    subject = f"Your Week {week_no} Study Plan & Calendar Invite ({target_role}) — {APP_NAME}"
+    notice = (
+        f"You received this email because you generated Week {week_no} of your study plan on {APP_NAME}."
+    )
+
+    text_days = []
+    html_rows = []
+    for d in days_data:
+        day_num = getattr(d, "day", 1)
+        topic = str(getattr(d, "topic", ""))
+        dur = int(getattr(d, "duration_min", 60))
+        goal = str(getattr(d, "practice_goal", ""))
+        subs = getattr(d, "subtopics", [])
+        sub_str = ", ".join(subs) if isinstance(subs, list) else str(subs)
+        ev_date = start + timedelta(days=day_num - 1)
+        gcal_url = calendar_export.build_gcal_url(
+            f"[Skill Scout Nexus] Day {day_num}: {topic}",
+            f"Week {week_no} Day {day_num} ({dur} min)\nTopic: {topic}\nSubtopics: {sub_str}\nGoal: {goal}",
+            target_date=ev_date,
+            duration_min=dur,
+        )
+        text_days.append(
+            f"Day {day_num} ({ev_date:%d %b %Y}) - {topic} ({dur} min)\n"
+            f"  Subtopics: {sub_str}\n"
+            f"  Practice goal: {goal}\n"
+            f"  Add to Google Calendar: {gcal_url}"
+        )
+        html_rows.append(
+            '<tr><td style="padding:12px 14px;border-bottom:1px solid #DCE6E6">'
+            f'<div style="font:700 15px {_FONT};color:#14282B">Day {day_num} ({ev_date:%d %b}) · {_esc(topic)} '
+            f'<span style="color:#5F7274;font-weight:500">({dur} min)</span></div>'
+            f'<div style="margin:4px 0;font:13px {_FONT};color:#4A5C5E"><strong>Subtopics:</strong> {_esc(sub_str)}</div>'
+            f'<div style="margin:4px 0 8px;font:13px {_FONT};color:#26393C"><strong>Goal:</strong> {_esc(goal)}</div>'
+            f'<a class="lk" href="{_esc(gcal_url)}" style="font:600 13px {_FONT};color:{BRAND_COLOR};text-decoration:none">'
+            '+ Add Day to Google Calendar &rarr;</a>'
+            "</td></tr>"
+        )
+
+    text = (
+        f"Hello {name},\n\n"
+        f"Your Week {week_no} 7-Day Study Plan for {target_role} is ready.\n\n"
+        f"Plan Summary:\n{rationale}\n\n"
+        + "\n\n".join(text_days)
+        + "\n\nAttached: study-schedule-week-"
+        + str(week_no)
+        + ".ics (Open/tap the attachment to add all 7 days directly to Apple Calendar on iOS/Mac, "
+        + "Google Calendar on Android/Web, or Microsoft Outlook).\n\n"
+        + _text_footer(notice)
+    )
+
+    body = (
+        f'<p style="margin:0 0 12px">Hello {_esc(name)},</p>'
+        f'<p style="margin:0 0 14px">Your personalized <strong>Week {week_no} Study Plan</strong> for '
+        f'<strong>{_esc(target_role)}</strong> has been generated.</p>'
+        f'<div class="note" style="background:#F1F5F5;border-radius:10px;padding:12px 14px;margin:0 0 18px;'
+        f'font:14px/1.5 {_FONT}"><strong>Why this plan:</strong> {_esc(rationale)}</div>'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="border:1px solid #DCE6E6;border-radius:10px;overflow:hidden;margin:0 0 18px">'
+        + "".join(html_rows)
+        + "</table>"
+        + _note(
+            "Open the attached study-schedule-week-"
+            f"{week_no}.ics file to add all 7 sessions at once on iOS (Apple Calendar), "
+            "Android (Google Calendar), Desktop (Outlook / macOS), or Web.",
+            lead="Add all 7 days to your calendar:",
+        )
+    )
+
+    page = _layout(
+        title=f"Week {week_no} Study Plan ({target_role})",
+        preheader=f"Your 7-day study schedule + universal .ics calendar invite for Week {week_no}.",
+        body=body,
+        notice=_esc(notice),
+    )
+
+    ics_attachment = Attachment(
+        filename=f"study-schedule-week-{week_no}.ics",
+        data=ics_bytes,
+        maintype="text",
+        subtype="calendar",
+        params={"charset": "utf-8", "method": "PUBLISH"},
+    )
+    return Message(to, subject, text, page, attachments=(ics_attachment,))
+
+
 def _email(msg: Message, sender: str) -> EmailMessage:
     email = EmailMessage()
     email["From"], email["To"], email["Subject"] = f"{APP_NAME} <{sender}>", msg.to, msg.subject
@@ -441,6 +554,14 @@ def _email(msg: Message, sender: str) -> EmailMessage:
         body = email.get_body(("html",))
         body.add_related(  # type: ignore[union-attr]
             LOGO_PATH.read_bytes(), "image", "png", cid=f"<{LOGO_CID}>", disposition="inline"
+        )
+    for att in msg.attachments:
+        email.add_attachment(
+            att.data,
+            maintype=att.maintype,
+            subtype=att.subtype,
+            filename=att.filename,
+            params=att.params or {},
         )
     return email
 

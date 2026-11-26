@@ -393,6 +393,28 @@ def set_days_done(student_id: str, week_no: int, days: Iterable[int]) -> set[int
     return chosen
 
 
+def email_weekly_plan(student_id: str, plan: WeeklyPlan) -> str | None:
+    """Send the student's 7-day weekly plan + universal .ics attachment to their email.
+    Returns 'smtp', 'outbox', or None if the student has no email address."""
+    s = student_row(student_id)
+    if s is None or not s["email"]:
+        return None
+    try:
+        from core import calendar_export, mailer
+
+        ics_bytes = calendar_export.generate_plan_ics(plan)
+        msg = mailer.weekly_plan_message(
+            s["email"],
+            name=s["name"],
+            target_role=s["target_role"],
+            plan=plan,
+            ics_bytes=ics_bytes,
+        )
+        return mailer.send(msg, also_outbox=True)
+    except Exception:
+        return None
+
+
 def generate_next_plan(student_id: str, on_event: OnEvent | None = None) -> WeeklyPlan:
     profile = _require_profile(student_id)
     ov = plan_overview(student_id, profile)
@@ -429,6 +451,7 @@ def generate_next_plan(student_id: str, on_event: OnEvent | None = None) -> Week
             crud.save_study_plan(t_row.id, plan.week_no, roadmap.model_dump())
     except Exception:
         pass
+    email_weekly_plan(student_id, plan)
     return plan
 
 

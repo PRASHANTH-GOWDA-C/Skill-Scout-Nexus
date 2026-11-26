@@ -550,6 +550,7 @@ def _sync_roadmap_to_weekly_plan(s: Student, week: int, roadmap: SevenDayRoadmap
             days=days,
         )
         db.save_plan(s.id, wp)
+        services.email_weekly_plan(s.id, wp)
     except Exception:
         log.exception("sync: could not mirror 7-day roadmap week %s to weekly plan", week)
 

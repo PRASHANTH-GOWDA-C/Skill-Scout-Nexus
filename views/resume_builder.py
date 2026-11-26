@@ -94,21 +94,20 @@ with hub_scanner:
                             s_name, s_data = upload_scan.name, upload_scan.getvalue()
                         else:
                             raise services.ServiceError("Upload a resume or pick a sample first.")
-                        with st.spinner("Scanning resume and updating your readiness profile…"):
+                        with st.spinner("Scanning resume and updating your skill profile…"):
                             scan_res = _j.scan_resume(sid, s_name, s_data, student["target_role"])
                             st.session_state["scan"] = scan_res
                         _j.preload_next_steps(sid)
-                        st.toast("Profile & readiness updated from your resume!", icon=":material/task_alt:")
+                        st.toast("Profile updated from your resume!", icon=":material/task_alt:")
                         st.rerun()
                     except services.ServiceError as exc:
                         st.error(formatter.md_escape(str(exc)), icon=":material/error:")
         # Show current profile / latest scan results
         cur_p = services.current_profile(sid)
         if cur_p is not None:
-            sc_c1, sc_c2, sc_c3 = st.columns(3)
-            sc_c1.metric("Readiness Score", f"{cur_p.readiness_score}/100")
-            sc_c2.metric("Matched Skills", str(len(cur_p.matched_skills)))
-            sc_c3.metric("Skill Gaps", str(len(cur_p.missing_skills)))
+            sc_c1, sc_c2 = st.columns(2)
+            sc_c1.metric("Matched Skills", str(len(cur_p.matched_skills)))
+            sc_c2.metric("Skill Gaps", str(len(cur_p.missing_skills)))
             f_col, m_col = st.columns(2, gap="medium")
             with f_col, st.container(border=True):
                 st.markdown("**:material/check_circle: Skills on your resume**")
@@ -347,7 +346,7 @@ with hub_builder:
 
     if saved_n := st.session_state.pop(SAVED, None):  # once, right after a save
         st.success(
-            f"Saved version {saved_n}. Your profile and readiness now follow this resume.",
+            f"Saved version {saved_n}. Your profile now follows this resume.",
             icon=":material/task_alt:",
         )
         ui.show_last_run("Profile agent")

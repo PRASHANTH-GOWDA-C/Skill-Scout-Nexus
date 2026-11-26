@@ -431,8 +431,6 @@ def org_progress_card(student_id: str | None) -> None:
         left.caption(formatter.md_escape(progress.next_step))
         with right:
             status_badge(*formatter.TIER_BADGE[progress.tier])
-            if progress.percentile is not None:
-                st.caption(f"Ahead of {progress.percentile}% of your batch on readiness.")
         step_bars(progress.steps)
 
 
@@ -454,13 +452,9 @@ def current_student() -> dict | None:
 
 
 def sidebar_context(mock_mode: bool, ai: str = "", engine: str = "") -> None:
-    """Under the student picker: their readiness at a glance, a quiet badge naming who
-    answers (mock mode, the AI provider in use, or the offline rules) and, last, the
-    engine line: AI, records and preloader (journey.engine_status)."""
+    """Under the student picker: a quiet badge naming who answers (mock mode, the AI provider
+    in use, or the offline rules) and, last, the engine line: AI, records and preloader."""
     with st.sidebar:
-        if student := current_student():
-            score = student["readiness_score"] or 0
-            st.progress(score / 100, text=f"Readiness {score}/100")
         if mock_mode:
             st.badge(
                 "Mock mode",

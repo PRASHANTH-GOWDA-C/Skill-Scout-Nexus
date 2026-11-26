@@ -502,28 +502,10 @@ def _delete(student: dict) -> None:
 
 
 def _readiness_card(profile: services.StudentProfile) -> None:
-    score = profile.readiness_score
     domain = services.domain_of_role(profile.target_role)
     with st.container(border=True):
         st.subheader(formatter.md_escape(profile.name), anchor=False)
         st.markdown(formatter.syllabus_line(domain.name, profile.target_role))
-        # A row even on a phone: the ring is a picture of the number beside it.
-        with st.container(horizontal=True, vertical_alignment="center", gap="large"):
-            st.metric(
-                "Readiness",
-                f"{score}/100",
-                help=(
-                    "How much of the target role's skill list the resume names in words. "
-                    "Skills the syllabus tests count double; tools count once."
-                ),
-                width="content",
-            )
-            st.vega_lite_chart(
-                spec=charts.readiness_ring_spec(score),
-                width="content",
-                alt=f"Readiness {score} out of 100",
-            )
-        st.caption(formatter.readiness_summary(profile))
         st.markdown("**On the resume**")
         st.markdown(
             formatter.skill_chips(profile.matched_skills, present=True) or ":gray[None yet.]"
@@ -536,7 +518,7 @@ def _readiness_card(profile: services.StudentProfile) -> None:
         st.markdown("**Topics you will practise**")
         st.html(formatter.topic_chips_html(services.focus_topics(profile.target_role)))
         st.caption(
-            "Your plans and quizzes use these; the Quiz page offers the rest of your domain."
+            "Your plans and quizzes use these; Quiz Arena offers the rest of your domain."
         )
 
 

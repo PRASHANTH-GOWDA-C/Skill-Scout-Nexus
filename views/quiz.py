@@ -316,7 +316,7 @@ def _review(result: services.QuizRunResult) -> None:
 page_header(
     "Quiz Arena",
     "Proctored quizzes with camera, microphone & fullscreen lock: take a custom Multi-Topic "
-    "quiz or a Quick Critic-Checked Skill quiz. Scores feed your readiness and weekly plan.",
+    "quiz or a Quick Critic-Checked Skill quiz. Scores feed your weekly plan and mastery.",
 )
 sid, profile = require_profile()
 
